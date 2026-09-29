@@ -1,0 +1,9 @@
+services:
+  lsv:
+    build: .
+    container_name: mostar-lsv
+    restart: unless-stopped
+    ports:
+      - "4500:3000"
+    env_file:
+      - .env
