@@ -29,6 +29,8 @@ export default function App() {
   const [activeView, setActiveView] = useState<'SHADOW_TRADER' | 'ARCHITECT_CONSOLE'>('SHADOW_TRADER');
   const [currentPair, setCurrentPair] = useState('BTC/USDT');
   const [simState, setSimState] = useState(() => createInitialSimulationState('BTC/USDT'));
+  const liveSocketRef = useRef<WebSocket | null>(null);
+  useEffect(() => () => { liveSocketRef.current?.close(); }, []);
 
   // Modals & Panels
   const [isAdvisorOpen, setIsAdvisorOpen] = useState(false);
@@ -49,6 +51,9 @@ export default function App() {
 
   // Update pair
   const handlePairChange = (newPair: string) => {
+    const socket = liveSocketRef.current;
+    liveSocketRef.current = null;
+    socket?.close();
     setCurrentPair(newPair);
     const fresh = createInitialSimulationState(newPair);
     setSimState(fresh);
@@ -325,15 +330,19 @@ export default function App() {
       // Attempt live connection
       try {
         const symbol = PAIR_CONFIGS[currentPair]?.symbol.toLowerCase() || 'btcusdt';
-        const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol}@depth20@100ms`);
+        const ws = new WebSocket(`wss://fstream.binance.com/public/ws/${symbol}@depth20@100ms`);
+        liveSocketRef.current = ws;
 
         ws.onopen = () => {
           addLog(`🟢 Binance WebSocket live connected for ${symbol.toUpperCase()}. Real-time L2 delta active.`);
         };
 
         ws.onmessage = (event) => {
+          if (liveSocketRef.current !== ws) return;
           try {
             const data = JSON.parse(event.data);
+            data.bids = data.b;
+            data.asks = data.a;
             if (data.bids && data.asks) {
               const bids = data.bids.map((b: string[]) => ({
                 price: parseFloat(b[0]),
@@ -395,11 +404,21 @@ export default function App() {
           addLog('Binance WebSocket unreachable or rate-limited. Falling back smoothly to synthetic high-fidelity engine.');
           setSimState((prev) => ({ ...prev, isLiveFeed: false }));
         };
+        ws.onclose = () => {
+          if (liveSocketRef.current === ws) {
+            liveSocketRef.current = null;
+            setSimState(prev => ({ ...prev, isLiveFeed: false }));
+            addLog('Live order-book connection closed. Simulation mode active.');
+          }
+        };
       } catch (err) {
         addLog('WebSocket initialization error. Using synthetic physics mode.');
         setSimState((prev) => ({ ...prev, isLiveFeed: false }));
       }
     } else {
+      const socket = liveSocketRef.current;
+      liveSocketRef.current = null;
+      socket?.close();
       addLog('Switched from Live Feed to Physics Simulation Sandbox.');
       setSimState((prev) => ({ ...prev, isLiveFeed: false }));
     }

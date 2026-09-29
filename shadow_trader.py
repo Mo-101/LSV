@@ -44,8 +44,8 @@ MAX_HOLD_SECONDS = 90          # 90-second mechanical time stop
 # Operational Modes: "SIGNAL_ONLY", "PAPER", "LIVE"
 OPERATIONAL_MODE = os.getenv("OPERATIONAL_MODE", "PAPER")
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8626267731:AAF_G0WXosbyPyvPjcQnRe2kiWL0fdXBx8E")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7539832188")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 
 class DualModeDispatcher:
@@ -307,12 +307,12 @@ class MultiPairFleetShadowTrader:
                 await self.log_trade(symbol, price, "TIME_STOP_EXPIRED (Floor Broken)")
 
     async def run(self):
-        streams = []
-        for p in self.pairs:
-            streams.append(f"{p}@depth20@100ms")
-            streams.append(f"{p}@aggTrade")
-        
-        ws_url = f"wss://fstream.binance.com/stream?streams={'/'.join(streams)}"
+        depth_streams = '/'.join(f"{p}@depth20@100ms" for p in self.pairs)
+        trade_streams = '/'.join(f"{p}@aggTrade" for p in self.pairs)
+        urls = [
+            f"wss://fstream.binance.com/public/stream?streams={depth_streams}",
+            f"wss://fstream.binance.com/market/stream?streams={trade_streams}",
+        ]
         print("="*70)
         print("🚀 TOP 30 DUAL-MODE MULTI-PAIR FLEET ENGINE")
         print(f"   Operational Mode: {OPERATIONAL_MODE}")
@@ -323,19 +323,25 @@ class MultiPairFleetShadowTrader:
         print(f"   Webhooks: Telegram={'Configured' if TELEGRAM_BOT_TOKEN else 'Off'} | Discord={'Configured' if DISCORD_WEBHOOK_URL else 'Off'}")
         print("="*70)
 
-        async with websockets.connect(ws_url) as ws:
-            print("✅ Multiplexed WebSocket Connected. Fleet scanning active...\n")
+        async def consume(url):
             while not self.is_halted:
-                msg = await ws.recv()
-                event = json.loads(msg)
-                stream = event.get('stream', '')
-                data = event.get('data', {})
-                symbol = stream.split('@')[0]
+                try:
+                    async with websockets.connect(url) as ws:
+                        async for msg in ws:
+                            if self.is_halted:
+                                return
+                            event = json.loads(msg)
+                            stream = event.get('stream', '')
+                            data = event.get('data', {})
+                            symbol = stream.split('@')[0]
+                            if 'depth20' in stream:
+                                self.process_depth(symbol, data)
+                            elif 'aggTrade' in stream:
+                                await self.process_trade(symbol, data)
+                except (OSError, websockets.exceptions.ConnectionClosed):
+                    await asyncio.sleep(5)
 
-                if 'depth20' in stream:
-                    self.process_depth(symbol, data)
-                elif 'aggTrade' in stream:
-                    await self.process_trade(symbol, data)
+        await asyncio.gather(*(consume(url) for url in urls))
 
 if __name__ == "__main__":
     trader = MultiPairFleetShadowTrader()

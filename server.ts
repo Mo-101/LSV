@@ -6,6 +6,8 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import { GoogleGenAI } from '@google/genai';
 import WebSocket from 'ws';
+import { finiteNumber } from './src/engine/tradeNumbers';
+import { LiquidationWindow } from './src/engine/liquidationWindow';
 
 dotenv.config();
 
@@ -15,18 +17,40 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json());
 
+const feedHealth = {
+  liquidations: { connected: false, messages: 0, lastMessageAt: null as string | null },
+  tickers: { connected: false, messages: 0, lastMessageAt: null as string | null },
+};
+const alertHealth = { attempts: 0, delivered: 0, failed: 0, lastError: null as string | null };
+app.get('/api/health', (_req, res) => {
+  res.json({
+    marketDataStatus: Object.values(feedHealth).every(feed => feed.connected) ? 'connected' : 'degraded',
+    uptimeSeconds: Math.floor(process.uptime()),
+    feeds: feedHealth,
+    alerts: alertHealth,
+    credentials: {
+      geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+      telegramConfigured: Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID),
+      binanceConfigured: Boolean(process.env.BINANCE_KEY && process.env.BINANCE_SECRET),
+      note: 'Configured does not mean authenticated.',
+    },
+    execution: { implemented: false, mode: 'simulation', exchangeOrdersEnabled: false },
+  });
+});
+
 // Telegram default credentials - updated with user provided active token
-const ACTIVE_TELEGRAM_TOKEN = '8626267731:AAF_G0WXosbyPyvPjcQnRe2kiWL0fdXBx8E';
-const DEFAULT_TG_BOT_TOKEN = ACTIVE_TELEGRAM_TOKEN;
-const DEFAULT_TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '7539832188';
+const DEFAULT_TG_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const DEFAULT_TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
 
 // Server-side helper to send Telegram alerts directly
 async function sendTelegramAlert(title: string, details: Record<string, string>) {
   if (!DEFAULT_TG_BOT_TOKEN || !DEFAULT_TG_CHAT_ID) return;
+  alertHealth.attempts++;
   try {
     const text = `<b>${title}</b>\n` + Object.entries(details).map(([k, v]) => `• <b>${k}:</b> ${v}`).join('\n');
-    await fetch(`https://api.telegram.org/bot${DEFAULT_TG_BOT_TOKEN}/sendMessage`, {
+    const response = await fetch(`https://api.telegram.org/bot${DEFAULT_TG_BOT_TOKEN}/sendMessage`, {
       method: 'POST',
+      signal: AbortSignal.timeout(10000),
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         chat_id: DEFAULT_TG_CHAT_ID,
@@ -34,8 +58,18 @@ async function sendTelegramAlert(title: string, details: Record<string, string>)
         parse_mode: 'HTML'
       })
     });
+    const result = await response.json();
+    if (!response.ok || !result.ok) {
+      alertHealth.failed++;
+      alertHealth.lastError = `Telegram rejected delivery (HTTP ${response.status}, code ${result.error_code ?? 'unknown'})`;
+      return;
+    }
+    alertHealth.delivered++;
+    alertHealth.lastError = null;
   } catch (err: any) {
-    console.error('Failed to send server-side Telegram alert:', err.message);
+    alertHealth.failed++;
+    alertHealth.lastError = 'Telegram network request failed or timed out';
+    console.error(alertHealth.lastError);
   }
 }
 
@@ -287,9 +321,9 @@ app.get('/api/shadow-trades', (_req, res) => {
       if (cleanParts.length >= 12) {
         // Full 13-column format: Timestamp,Symbol,Entry,Exit,CVI,QueueSec,Hold,Outcome,PnL_Pct,GrossUsd,FeeUsd,NetUsd,NetPct
         const grossUsd = parseFloat(cleanParts[9]) || 0;
-        const feeUsd = parseFloat(cleanParts[10]) || 0.035;
-        const netPnlUsd = parseFloat(cleanParts[11]) || (grossUsd - feeUsd);
-        const netPnlPct = parseFloat(cleanParts[12]) || ((parseFloat(cleanParts[8]) || 0) - 0.07);
+        const feeUsd = finiteNumber(cleanParts[10], 0.035);
+        const netPnlUsd = finiteNumber(cleanParts[11], grossUsd - feeUsd);
+        const netPnlPct = finiteNumber(cleanParts[12], (parseFloat(cleanParts[8]) || 0) - 0.07);
 
         return {
           id: `trade-${idx + 1}-${cleanParts[0]}`,
@@ -606,23 +640,26 @@ app.post('/api/gemini/audit-trades', async (req, res) => {
 // 2. Real-Time Price Velocity Radar for Top USD-M Futures
 const TOP_SENTINEL_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'DOGEUSDT', 'XRPUSDT', 'SUIUSDT', 'PEPEUSDT', 'AVAXUSDT', 'BNBUSDT', 'LINKUSDT'];
 let lastAlertTimes: Record<string, number> = {};
-let accumulatedLiqVolume: Record<string, { totalUsd: number; count: number; lastTime: number }> = {};
+const liquidationWindow = new LiquidationWindow();
 
-function startServerSideFleetScanner() {
+function startServerSideFleetScanner(stream: 'all' | 'liquidations' | 'tickers' = 'all') {
   console.log('[TELEGRAM SENTINEL] Starting 24/7 Autonomous Background Sentinel Engine...');
 
   // 1. Global Binance Forced Liquidation Stream
-  const liqWsUrl = 'wss://fstream.binance.com/ws/!forceOrder@arr';
+  const liqWsUrl = 'wss://fstream.binance.com/market/ws/!forceOrder@arr';
   let liqWs: WebSocket | null = null;
 
-  try {
+  if (stream !== 'tickers') try {
     liqWs = new WebSocket(liqWsUrl);
 
     liqWs.on('open', () => {
+      feedHealth.liquidations.connected = true;
       console.log('✅ [SENTINEL 24/7] Connected to Binance Global Futures Liquidation Stream (!forceOrder@arr)');
     });
 
     liqWs.on('message', async (raw: string) => {
+      feedHealth.liquidations.messages++;
+      feedHealth.liquidations.lastMessageAt = new Date().toISOString();
       try {
         const payload = JSON.parse(raw.toString());
         const order = payload.o;
@@ -636,15 +673,7 @@ function startServerSideFleetScanner() {
 
         // Track rolling liquidation volume per symbol (30s window)
         const now = Date.now();
-        if (!accumulatedLiqVolume[symbol] || now - accumulatedLiqVolume[symbol].lastTime > 30000) {
-          accumulatedLiqVolume[symbol] = { totalUsd: usdValue, count: 1, lastTime: now };
-        } else {
-          accumulatedLiqVolume[symbol].totalUsd += usdValue;
-          accumulatedLiqVolume[symbol].count += 1;
-          accumulatedLiqVolume[symbol].lastTime = now;
-        }
-
-        const cluster = accumulatedLiqVolume[symbol];
+        const cluster = liquidationWindow.add(symbol, side, usdValue, now);
         const lastSent = lastAlertTimes[symbol] || 0;
 
         // TRIGGER THRESHOLD:
@@ -679,8 +708,9 @@ function startServerSideFleetScanner() {
     });
 
     liqWs.on('close', () => {
+      feedHealth.liquidations.connected = false;
       console.log('[SENTINEL 24/7] Liquidation stream closed. Auto-reconnecting in 5s...');
-      setTimeout(startServerSideFleetScanner, 5000);
+      setTimeout(() => startServerSideFleetScanner('liquidations'), 5000);
     });
   } catch (err: any) {
     console.error('[SENTINEL 24/7] Failed to bind liquidation stream:', err.message);
@@ -688,17 +718,20 @@ function startServerSideFleetScanner() {
 
   // 2. Real-Time Price Velocity Radar for High-Frequency Tickers
   const streamNames = TOP_SENTINEL_SYMBOLS.map(s => `${s.toLowerCase()}@ticker`).join('/');
-  const tickerWsUrl = `wss://fstream.binance.com/stream?streams=${streamNames}`;
+  const tickerWsUrl = `wss://fstream.binance.com/market/stream?streams=${streamNames}`;
   let tickerWs: WebSocket | null = null;
 
-  try {
+  if (stream !== 'liquidations') try {
     tickerWs = new WebSocket(tickerWsUrl);
 
     tickerWs.on('open', () => {
+      feedHealth.tickers.connected = true;
       console.log('✅ [SENTINEL 24/7] Connected to Binance Multi-Ticker Velocity Stream');
     });
 
     tickerWs.on('message', async (dataStr: string) => {
+      feedHealth.tickers.messages++;
+      feedHealth.tickers.lastMessageAt = new Date().toISOString();
       try {
         const payload = JSON.parse(dataStr.toString());
         const data = payload.data;
@@ -732,9 +765,8 @@ function startServerSideFleetScanner() {
     });
 
     tickerWs.on('close', () => {
-      setTimeout(() => {
-        // re-handled by heartbeat
-      }, 5000);
+      feedHealth.tickers.connected = false;
+      setTimeout(() => startServerSideFleetScanner('tickers'), 5000);
     });
   } catch (err: any) {
     console.error('[SENTINEL 24/7] Failed to bind ticker stream:', err.message);

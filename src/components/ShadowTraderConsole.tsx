@@ -93,8 +93,8 @@ const DEFAULT_GOVERNOR: ConcurrencyGovernorConfig = {
 
 const DEFAULT_WEBHOOK_CONFIG: WebhookDispatcherConfig = {
   enabled: true,
-  telegramToken: '8626267731:AAF_G0WXosbyPyvPjcQnRe2kiWL0fdXBx8E',
-  telegramChatId: '7539832188',
+  telegramToken: '',
+  telegramChatId: '',
   discordWebhookUrl: '',
   notifyOnArmed: true,
   notifyOnFilled: true,
@@ -122,44 +122,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
   const [isPingSending, setIsPingSending] = useState<boolean>(false);
 
   // 4. Live Signal Dispatch Cards (Card previews sent to phone/discord)
-  const [dispatchedSignals, setDispatchedSignals] = useState<DispatchedSignalCard[]>([
-    {
-      id: 'sig-init-sol',
-      timestamp: new Date().toISOString(),
-      type: 'FILLED',
-      symbol: 'SOLUSDT',
-      title: '🚨 [AIR POCKET DETONATION] — SOLUSDT',
-      badgeColor: 'emerald',
-      destinations: ['Telegram', 'Discord Webhook'],
-      metrics: {
-        'Cascade Volume': '$38.4M Forced Sells',
-        'Vacuum Metric': 'CVI 4.82x (Thin Book)',
-        'Queue Hurdle': '$150,000 Absorbed (1.4s)',
-        'Net Entry': '$172.40 (Post-Only Filled)',
-        'Target TP': '$174.15 (+1.01% Snapback)',
-        'Chronometer': '90s Mechanical Countdown',
-        'Execution': 'Autonomous Active (Slot #1)'
-      },
-      rawPayload: `🚨 [AIR POCKET DETONATION] — SOLUSDT\n• Cascade Volume: $38.4M Forced Sells\n• Vacuum Metric: CVI 4.82x\n• Queue Hurdle: $150,000 Absorbed\n• Net Entry: $172.40\n• Target TP: $174.15\n• Mode: Autonomous Execution (Slot #1)`
-    },
-    {
-      id: 'sig-init-btc',
-      timestamp: new Date(Date.now() - 45000).toISOString(),
-      type: 'EXIT_TP',
-      symbol: 'BTCUSDT',
-      title: '✅ [MEAN REVERSION COMPLETE] — BTCUSDT',
-      badgeColor: 'cyan',
-      destinations: ['Telegram', 'Discord Webhook'],
-      metrics: {
-        'Outcome': 'TP_HIT (Mean Reversion)',
-        'Hold Duration': '24.5s / 90s Max',
-        'Profit Realized': '+0.50% (+$125.00)',
-        'Capital Slot #2': 'Released to STANDBY',
-        'Exhaustion Cushion': '145% Bid Floor Verified'
-      },
-      rawPayload: `✅ [MEAN REVERSION COMPLETE] — BTCUSDT\n• Outcome: TP_HIT (Mean Reversion)\n• Hold: 24.5s\n• PnL: +0.50% (+$125.00)\n• Capital Slot #2: Released to STANDBY`
-    }
-  ]);
+  const [dispatchedSignals, setDispatchedSignals] = useState<DispatchedSignalCard[]>([]);
 
   // Fleet State (Top 30 live matrix)
   const [fleet, setFleet] = useState<FleetPairTelemetry[]>(() => 
@@ -221,12 +184,14 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
   // Dispatch signal card generator
   const dispatchSignal = useCallback((card: Omit<DispatchedSignalCard, 'id' | 'timestamp' | 'destinations'>) => {
     const destinations: string[] = [];
-    if (webhookConfig.telegramToken && webhookConfig.telegramChatId) destinations.push('Telegram');
+    if (webhookConfig.enabled) destinations.push('Delivery pending');
     if (webhookConfig.discordWebhookUrl) destinations.push('Discord Webhook');
     if (destinations.length === 0) destinations.push('Local Terminal Relay');
 
     const newCard: DispatchedSignalCard = {
       ...card,
+      title: `[SIMULATION] ${card.title}`,
+      metrics: { ...card.metrics, 'Execution source': 'Local simulation; no exchange order' },
       id: `sig-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       timestamp: new Date().toISOString(),
       destinations,
@@ -235,19 +200,30 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
     setDispatchedSignals(prev => [newCard, ...prev.slice(0, 19)]);
 
     // Automatically send to Telegram via backend if configured
-    if (webhookConfig.enabled && webhookConfig.telegramToken && webhookConfig.telegramChatId) {
+    if (webhookConfig.enabled) {
       fetch('/api/webhook/dispatch-alert', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          title: card.title,
-          details: card.metrics,
+          title: newCard.title,
+          details: newCard.metrics,
           telegramToken: webhookConfig.telegramToken,
           telegramChatId: webhookConfig.telegramChatId,
           discordWebhookUrl: webhookConfig.discordWebhookUrl,
         }),
+      }).then(async response => {
+        const data = await response.json();
+        const results = data.results || {};
+        const delivered = Object.entries(results)
+          .filter(([, status]) => status === 'SUCCESS')
+          .map(([destination]) => destination);
+        setDispatchedSignals(previous => previous.map(signal => signal.id === newCard.id
+          ? { ...signal, destinations: delivered.length ? delivered : ['Delivery failed or not configured'] }
+          : signal));
       }).catch(() => {
-        // non-blocking
+        setDispatchedSignals(previous => previous.map(signal => signal.id === newCard.id
+          ? { ...signal, destinations: ['Delivery failed'] }
+          : signal));
       });
     }
   }, [webhookConfig]);
@@ -295,16 +271,23 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
   // ================= LIVE WEBSOCKET INGESTION =================
   useEffect(() => {
     const symbolLower = selectedPair.toLowerCase();
-    const wsUrl = `wss://fstream.binance.com/stream?streams=${symbolLower}@depth20@100ms/${symbolLower}@aggTrade`;
+    const wsUrls = [
+      `wss://fstream.binance.com/public/stream?streams=${symbolLower}@depth20@100ms`,
+      `wss://fstream.binance.com/market/stream?streams=${symbolLower}@aggTrade`,
+    ];
 
     setConnectionStatus('CONNECTING');
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(wsUrl);
+    const sockets = new Set<WebSocket>();
+    const receivedStreams = new Set<string>();
+    let disposed = false;
+    const reconnectTimers = new Set<ReturnType<typeof setTimeout>>();
+    const connect = (wsUrl: string) => { try {
+      const ws = new WebSocket(wsUrl);
+      sockets.add(ws);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        setConnectionStatus('CONNECTED');
+        setConnectionStatus('CONNECTING');
       };
 
       ws.onmessage = (event) => {
@@ -312,6 +295,8 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
           const payload = JSON.parse(event.data);
           const stream = payload.stream || '';
           const data = payload.data || {};
+          if (data.e) receivedStreams.add(wsUrl);
+          if (receivedStreams.size === wsUrls.length) setConnectionStatus('CONNECTED');
 
           if (stream.includes('depth20')) {
             const rawBids: Array<[string, string]> = data.b || [];
@@ -364,8 +349,9 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
 
             // If ARMED, authenticate real USD queue penetration
             setFleet(prev => prev.map(item => {
+              if (operationalMode !== 'PAPER' || !isScanningActive || isHalted || !governor.autoExecute) return item;
               if (item.symbol !== selectedPair || item.status !== 'ARMED') return item;
-              if (item.armedPrice && p <= item.armedPrice) {
+              if (data.m === true && item.armedPrice && p <= item.armedPrice) {
                 const nextFillUsd = (item.accumulatedFillUsd || 0) + tradeUsd;
                 if (nextFillUsd >= governor.usdQueueHurdle) {
                   // Concurrency Governor Slot Allocation
@@ -412,15 +398,28 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
       };
 
       ws.onerror = () => setConnectionStatus('DISCONNECTED');
-      ws.onclose = () => setConnectionStatus('DISCONNECTED');
+      ws.onclose = () => {
+        sockets.delete(ws);
+        receivedStreams.delete(wsUrl);
+        if (disposed) return;
+        setConnectionStatus('DISCONNECTED');
+        const timer = setTimeout(() => {
+          reconnectTimers.delete(timer);
+          connect(wsUrl);
+        }, 5000);
+        reconnectTimers.add(timer);
+      };
     } catch {
       setConnectionStatus('DISCONNECTED');
-    }
+    } };
+    wsUrls.forEach(connect);
 
     return () => {
-      if (wsRef.current) wsRef.current.close();
+      disposed = true;
+      reconnectTimers.forEach(clearTimeout);
+      sockets.forEach(ws => ws.close());
     };
-  }, [selectedPair, governor.usdQueueHurdle, governor.maxActiveSlots, operationalMode, dispatchSignal]);
+  }, [selectedPair, governor.usdQueueHurdle, governor.maxActiveSlots, governor.autoExecute, operationalMode, isScanningActive, isHalted, dispatchSignal]);
 
   // ================= SIMULATED FLEET ENGINE DYNAMICS =================
   useEffect(() => {
@@ -430,7 +429,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
       const now = Date.now();
 
       setFleet(prev => {
-        const activeFilledCount = prev.filter(p => p.status === 'FILLED').length;
+        let activeFilledCount = prev.filter(p => p.status === 'FILLED').length;
 
         return prev.map(pair => {
           let updatedPair = { ...pair };
@@ -513,7 +512,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
           }
 
           // Autonomous Queue Absorption & Air-Pocket Detonation (Armed -> Filled)
-          if (updatedPair.status === 'ARMED' && governor.autoExecute) {
+          if (updatedPair.status === 'ARMED' && governor.autoExecute && operationalMode === 'PAPER') {
             // Taker sell orders hit the book: accumulate $25k-$45k per second towards the $150,000 USD hurdle
             const incomingTakerVol = 28000 + Math.floor(Math.random() * 22000);
             const nextQueueTotal = (updatedPair.accumulatedFillUsd || 0) + incomingTakerVol;
@@ -522,6 +521,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
             if (nextQueueTotal >= governor.usdQueueHurdle) {
               if (activeFilledCount < governor.maxActiveSlots) {
                 const allocatedSlot = activeFilledCount + 1;
+                activeFilledCount++;
                 const floorPrice = updatedPair.armedPrice || updatedPair.price;
                 const tpTarget = floorPrice * 1.005;
                 
@@ -598,7 +598,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
     }, 1000);
 
     return () => clearInterval(fleetInterval);
-  }, [isScanningActive, isHalted, selectedPair, governor, webhookConfig.notifyOnArmed, dispatchSignal]);
+  }, [isScanningActive, isHalted, selectedPair, governor, operationalMode, webhookConfig.notifyOnArmed, dispatchSignal]);
 
   // Set of actively closing trade symbols to prevent race conditions or double logging
   const closingTradesRef = useRef<Set<string>>(new Set());
@@ -796,6 +796,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
   };
 
   const satisfyQueueHurdle = (targetSymbol: string) => {
+    if (operationalMode !== 'PAPER' || isHalted) return;
     setFleet(prev => {
       const activeCount = prev.filter(p => p.status === 'FILLED').length;
       if (activeCount >= governor.maxActiveSlots) {
@@ -873,8 +874,8 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
     const cleanFast = tradeLogs.filter(t => t.outcome.startsWith('TP_HIT') && t.holdSeconds < 45).length;
     const totalHold = tradeLogs.reduce((acc, t) => acc + (t.holdSeconds || 0), 0);
     const totalGrossUsd = tradeLogs.reduce((acc, t) => acc + (t.pnlUsd || 0), 0);
-    const totalFeesUsd = tradeLogs.reduce((acc, t) => acc + (t.feeUsd || ((governor.marginPerSlotUsd * 10 * governor.feeDragPct) / 100)), 0);
-    const totalNetUsd = tradeLogs.reduce((acc, t) => acc + (t.netPnlUsd !== undefined ? t.netPnlUsd : ((t.pnlUsd || 0) - (t.feeUsd || 175))), 0);
+    const totalFeesUsd = tradeLogs.reduce((acc, t) => acc + (t.feeUsd ?? ((governor.marginPerSlotUsd * 10 * governor.feeDragPct) / 100)), 0);
+    const totalNetUsd = tradeLogs.reduce((acc, t) => acc + (t.netPnlUsd !== undefined ? t.netPnlUsd : ((t.pnlUsd || 0) - (t.feeUsd ?? 175))), 0);
     const totalNetPct = tradeLogs.reduce((acc, t) => acc + (t.netPnlPct !== undefined ? t.netPnlPct : ((t.pnlPct || 0) - 0.07)), 0);
     const totalQueueSec = tradeLogs.reduce((acc, t) => acc + (t.queueClearanceSeconds || 8.4), 0);
 
@@ -1168,8 +1169,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
 
               <button
                 onClick={() => {
-                  setOperationalMode('LIVE');
-                  setToastMessage('Operational Mode set to: LIVE EXECUTION (Contingent API)');
+                  setToastMessage('Exchange execution unavailable: testnet credentials and order integration are required.');
                   setTimeout(() => setToastMessage(null), 3000);
                 }}
                 className={`flex items-center gap-1.5 px-3 py-1 rounded-md transition-all font-bold ${
@@ -1177,10 +1177,10 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
                     ? 'bg-rose-950 text-rose-300 border border-rose-600/70 shadow-sm animate-pulse'
                     : 'text-zinc-500 hover:text-zinc-300'
                 }`}
-                title="Places post-only limit orders on exchange matching engine via private API"
+                title="Unavailable: exchange order execution is not implemented"
               >
                 <Zap className="w-3 h-3 text-rose-400" />
-                <span>LIVE EXECUTION</span>
+                <span>EXCHANGE EXECUTION UNAVAILABLE</span>
               </button>
             </div>
           </div>
