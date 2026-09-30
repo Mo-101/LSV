@@ -106,9 +106,51 @@ interface ShadowTraderConsoleProps {
   onBackToBlueprint?: () => void;
 }
 
+interface TestnetPosition {
+  symbol: string;
+  side: 'BUY' | 'SELL';
+  entryOrderId: number;
+  entryPrice: number;
+  quantity: number;
+  targetTp: number;
+  filled: boolean;
+  tpOrderId: number | null;
+  openedAt: number;
+}
+
+interface TestnetStatus {
+  connected: boolean;
+  balance: number | null;
+  error?: string | null;
+  positions: TestnetPosition[];
+}
+
 export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
   // 1. Operational Mode: 3-way toggle [SIGNAL_ONLY, PAPER, LIVE]
   const [operationalMode, setOperationalMode] = useState<OperationalMode>('PAPER');
+
+  // Real Binance Futures Testnet account/position status, polled from the backend.
+  // This is the actual exchange state — distinct from the simulated fleet below.
+  const [testnetStatus, setTestnetStatus] = useState<TestnetStatus | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/testnet/status');
+        const data = await res.json();
+        if (!cancelled) setTestnetStatus(data);
+      } catch {
+        if (!cancelled) setTestnetStatus(prev => prev ?? { connected: false, balance: null, positions: [] });
+      }
+    };
+    poll();
+    const interval = setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
 
   // 2. Governor & Fleet Configuration
   const [governor, setGovernor] = useState<ConcurrencyGovernorConfig>(DEFAULT_GOVERNOR);
@@ -1169,20 +1211,51 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
 
               <button
                 onClick={() => {
-                  setToastMessage('Exchange execution unavailable: testnet credentials and order integration are required.');
-                  setTimeout(() => setToastMessage(null), 3000);
+                  if (testnetStatus?.connected) {
+                    setToastMessage('This toggle only affects the client-side paper simulation below. The real Binance testnet executor runs independently in the backend and fires on live liquidation cascades regardless of this setting.');
+                  } else {
+                    setToastMessage('Testnet executor not connected — check BINANCE_KEY/BINANCE_SECRET on the server.');
+                  }
+                  setTimeout(() => setToastMessage(null), 4000);
                 }}
                 className={`flex items-center gap-1.5 px-3 py-1 rounded-md transition-all font-bold ${
-                  operationalMode === 'LIVE'
-                    ? 'bg-rose-950 text-rose-300 border border-rose-600/70 shadow-sm animate-pulse'
-                    : 'text-zinc-500 hover:text-zinc-300'
+                  testnetStatus?.connected
+                    ? 'bg-emerald-950 text-emerald-300 border border-emerald-600/70 shadow-sm'
+                    : 'bg-rose-950 text-rose-300 border border-rose-600/70'
                 }`}
-                title="Unavailable: exchange order execution is not implemented"
+                title={testnetStatus?.connected ? 'Real Binance Futures Testnet executor is live in the backend' : 'Backend testnet executor is not connected'}
               >
-                <Zap className="w-3 h-3 text-rose-400" />
-                <span>EXCHANGE EXECUTION UNAVAILABLE</span>
+                <Zap className={`w-3 h-3 ${testnetStatus?.connected ? 'text-emerald-400' : 'text-rose-400'}`} />
+                <span>{testnetStatus?.connected ? 'TESTNET EXECUTION: LIVE' : 'TESTNET EXECUTION: OFFLINE'}</span>
               </button>
             </div>
+          </div>
+
+          {/* Real Binance Testnet account strip — actual exchange data, polled every 5s */}
+          <div className="w-full flex flex-wrap items-center gap-3 px-3 py-2 bg-black/40 border border-zinc-800 rounded-lg">
+            <div className="flex items-center gap-1.5">
+              <span className={`w-2 h-2 rounded-full ${testnetStatus?.connected ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'}`} />
+              <span className="text-[10px] font-mono font-bold uppercase text-zinc-400">
+                {testnetStatus?.connected ? 'Connected to testnet.binancefuture.com' : testnetStatus ? `Disconnected${testnetStatus.error ? `: ${testnetStatus.error}` : ''}` : 'Checking...'}
+              </span>
+            </div>
+            {testnetStatus?.connected && (
+              <>
+                <span className="text-zinc-700">|</span>
+                <span className="text-[11px] font-mono text-zinc-300">
+                  Balance: <span className="text-emerald-300 font-bold">${testnetStatus.balance?.toLocaleString(undefined, { maximumFractionDigits: 2 }) ?? '—'} USDT</span>
+                </span>
+                <span className="text-zinc-700">|</span>
+                <span className="text-[11px] font-mono text-zinc-300">
+                  Real open positions: <span className="text-white font-bold">{testnetStatus.positions.length}</span>
+                </span>
+                {testnetStatus.positions.map(p => (
+                  <span key={p.entryOrderId} className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-900 border border-zinc-700 text-zinc-300">
+                    {p.symbol} {p.side} #{p.entryOrderId} {p.filled ? '(filled, TP pending)' : '(open, awaiting fill)'}
+                  </span>
+                ))}
+              </>
+            )}
           </div>
 
           {/* Right: Operational Controls, Webhook Modal & Emergency Kill Switch */}

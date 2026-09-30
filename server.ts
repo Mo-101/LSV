@@ -45,6 +45,32 @@ app.get('/api/events', (req, res) => {
   });
 });
 
+// Real Binance Futures Testnet account/position status — proves the UI is
+// actually wired to the exchange, distinct from the simulated shadow trader.
+app.get('/api/testnet/status', async (_req, res) => {
+  if (!testnetExecutor) {
+    return res.json({ connected: false, balance: null, positions: [] });
+  }
+  const balance = await testnetExecutor.getAccountBalance();
+  const positions = Array.from(testnetExecutor.activePositions.values()).map(p => ({
+    symbol: p.symbol,
+    side: p.side,
+    entryOrderId: p.entryOrderId,
+    entryPrice: p.entryPrice,
+    quantity: p.quantity,
+    targetTp: p.targetTp,
+    filled: p.filled,
+    tpOrderId: p.tpOrderId ?? null,
+    openedAt: p.openedAt,
+  }));
+  res.json({
+    connected: balance.ok,
+    balance: balance.ok ? balance.usdtBalance ?? null : null,
+    error: balance.ok ? null : balance.error,
+    positions,
+  });
+});
+
 const feedHealth = {
   liquidations: { connected: false, messages: 0, lastMessageAt: null as string | null },
   tickers: { connected: false, messages: 0, lastMessageAt: null as string | null },
