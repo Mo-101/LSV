@@ -166,6 +166,31 @@ export class BinanceTestnetExecutor {
     }
   }
 
+  /** Balance plus real per-symbol position risk (live unrealized P&L) from the exchange. */
+  async getAccountSnapshot(): Promise<{
+    ok: boolean;
+    usdtBalance?: number;
+    positions?: Array<{ symbol: string; positionAmt: number; entryPrice: number; unrealizedProfit: number }>;
+    error?: string;
+  }> {
+    try {
+      const { httpOk, json } = await this.signedRequest('GET', '/fapi/v2/account', {});
+      if (!httpOk) return { ok: false, error: json.msg || 'Account query failed' };
+      const usdt = (json.assets || []).find((a: any) => a.asset === 'USDT');
+      const positions = (json.positions || [])
+        .filter((p: any) => parseFloat(p.positionAmt) !== 0)
+        .map((p: any) => ({
+          symbol: p.symbol,
+          positionAmt: parseFloat(p.positionAmt),
+          entryPrice: parseFloat(p.entryPrice),
+          unrealizedProfit: parseFloat(p.unRealizedProfit ?? p.unrealizedProfit ?? '0'),
+        }));
+      return { ok: true, usdtBalance: usdt ? parseFloat(usdt.availableBalance) : undefined, positions };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    }
+  }
+
   /** Starts (or restarts) the user data stream and wires fill notifications to onFill. */
   async startUserDataStream(onFill: (symbol: string, orderId: number, status: string) => void) {
     const res = await fetch(`${TESTNET_REST_BASE}/fapi/v1/listenKey`, {

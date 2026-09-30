@@ -51,22 +51,34 @@ app.get('/api/testnet/status', async (_req, res) => {
   if (!testnetExecutor) {
     return res.json({ connected: false, balance: null, positions: [] });
   }
-  const balance = await testnetExecutor.getAccountBalance();
-  const positions = Array.from(testnetExecutor.activePositions.values()).map(p => ({
-    symbol: p.symbol,
-    side: p.side,
-    entryOrderId: p.entryOrderId,
-    entryPrice: p.entryPrice,
-    quantity: p.quantity,
-    targetTp: p.targetTp,
-    filled: p.filled,
-    tpOrderId: p.tpOrderId ?? null,
-    openedAt: p.openedAt,
-  }));
+  const snapshot = await testnetExecutor.getAccountSnapshot();
+  if (!snapshot.ok) {
+    return res.json({ connected: false, balance: null, error: snapshot.error, positions: [] });
+  }
+  const positions = Array.from(testnetExecutor.activePositions.values()).map(p => {
+    const real = (snapshot.positions || []).find(rp => rp.symbol === p.symbol);
+    const notional = Math.abs(p.entryPrice * p.quantity);
+    const pnlUsd = real ? real.unrealizedProfit : 0;
+    const pnlPct = notional > 0 ? (pnlUsd / notional) * 100 : 0;
+    return {
+      symbol: p.symbol,
+      side: p.side,
+      entryOrderId: p.entryOrderId,
+      entryPrice: p.entryPrice,
+      quantity: p.quantity,
+      targetTp: p.targetTp,
+      filled: p.filled,
+      tpOrderId: p.tpOrderId ?? null,
+      openedAt: p.openedAt,
+      pnlUsd,
+      pnlPct,
+      holdSeconds: Math.floor((Date.now() - p.openedAt) / 1000),
+    };
+  });
   res.json({
-    connected: balance.ok,
-    balance: balance.ok ? balance.usdtBalance ?? null : null,
-    error: balance.ok ? null : balance.error,
+    connected: true,
+    balance: snapshot.usdtBalance ?? null,
+    error: null,
     positions,
   });
 });

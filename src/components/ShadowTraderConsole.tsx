@@ -116,6 +116,9 @@ interface TestnetPosition {
   filled: boolean;
   tpOrderId: number | null;
   openedAt: number;
+  pnlUsd: number;
+  pnlPct: number;
+  holdSeconds: number;
 }
 
 interface TestnetStatus {
@@ -222,6 +225,25 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
   const armedTraps = useMemo(() => {
     return fleet.filter(p => p.status === 'ARMED');
   }, [fleet]);
+
+  // When TESTNET mode is selected, the slot panel shows real backend
+  // positions instead of the client-side paper simulation. The paper
+  // simulation (fleet state, WS ticks, etc.) keeps running unaffected either
+  // way — this only changes what the Slot panel reads from.
+  const isShowingRealTestnet = operationalMode === 'LIVE' && Boolean(testnetStatus?.connected);
+  const realSlots = useMemo(() => {
+    return (testnetStatus?.positions || []).map(p => ({
+      symbol: p.symbol,
+      pnlUsd: p.pnlUsd,
+      pnlPct: p.pnlPct,
+      holdSeconds: p.holdSeconds,
+      armedPrice: p.entryPrice,
+      isReal: true as const,
+      filled: p.filled,
+      entryOrderId: p.entryOrderId,
+    }));
+  }, [testnetStatus]);
+  const displaySlots = isShowingRealTestnet ? realSlots : occupiedSlots;
 
   // Dispatch signal card generator
   const dispatchSignal = useCallback((card: Omit<DispatchedSignalCard, 'id' | 'timestamp' | 'destinations'>) => {
@@ -837,6 +859,26 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
     setTimeout(() => setToastMessage(null), 3000);
   };
 
+  // In TESTNET mode, "TEST CASCADE" fires a real signed order on the backend
+  // instead of arming the client-side paper simulation.
+  const handleTestCascadeClick = (targetSymbol: string) => {
+    if (isShowingRealTestnet) {
+      setToastMessage(`Dispatching real testnet order for ${targetSymbol}...`);
+      fetch(`/api/testnet/force-test-order?symbol=${targetSymbol}`, { method: 'POST' })
+        .then(res => res.json())
+        .then(data => {
+          setToastMessage(data.ok ? `Real order dispatched: ${targetSymbol} #${data.orderId}` : `Rejected: ${data.reason || data.error}`);
+          setTimeout(() => setToastMessage(null), 4000);
+        })
+        .catch(() => {
+          setToastMessage('Failed to reach backend testnet endpoint.');
+          setTimeout(() => setToastMessage(null), 4000);
+        });
+      return;
+    }
+    triggerSimulatedFleetCascade(targetSymbol);
+  };
+
   const satisfyQueueHurdle = (targetSymbol: string) => {
     if (operationalMode !== 'PAPER' || isHalted) return;
     setFleet(prev => {
@@ -1211,22 +1253,34 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
 
               <button
                 onClick={() => {
-                  if (testnetStatus?.connected) {
-                    setToastMessage('This toggle only affects the client-side paper simulation below. The real Binance testnet executor runs independently in the backend and fires on live liquidation cascades regardless of this setting.');
-                  } else {
+                  if (!testnetStatus?.connected) {
                     setToastMessage('Testnet executor not connected — check BINANCE_KEY/BINANCE_SECRET on the server.');
+                    setTimeout(() => setToastMessage(null), 4000);
+                    return;
                   }
+                  setOperationalMode(prev => (prev === 'LIVE' ? 'PAPER' : 'LIVE'));
+                  setToastMessage(operationalMode === 'LIVE'
+                    ? 'Switched back to PAPER — slots now show the simulation again.'
+                    : 'Switched to TESTNET view — slots and TEST CASCADE now reflect the real backend executor. The autonomous cascade handler was already running regardless of this toggle.');
                   setTimeout(() => setToastMessage(null), 4000);
                 }}
                 className={`flex items-center gap-1.5 px-3 py-1 rounded-md transition-all font-bold ${
-                  testnetStatus?.connected
-                    ? 'bg-emerald-950 text-emerald-300 border border-emerald-600/70 shadow-sm'
-                    : 'bg-rose-950 text-rose-300 border border-rose-600/70'
+                  operationalMode === 'LIVE'
+                    ? 'bg-emerald-950 text-emerald-300 border border-emerald-600/70 shadow-sm animate-pulse'
+                    : testnetStatus?.connected
+                      ? 'text-emerald-500 hover:text-emerald-300'
+                      : 'bg-rose-950 text-rose-300 border border-rose-600/70'
                 }`}
-                title={testnetStatus?.connected ? 'Real Binance Futures Testnet executor is live in the backend' : 'Backend testnet executor is not connected'}
+                title={testnetStatus?.connected ? 'Switch the slot/pair display to real Binance Futures Testnet state' : 'Backend testnet executor is not connected'}
               >
                 <Zap className={`w-3 h-3 ${testnetStatus?.connected ? 'text-emerald-400' : 'text-rose-400'}`} />
-                <span>{testnetStatus?.connected ? 'TESTNET EXECUTION: LIVE' : 'TESTNET EXECUTION: OFFLINE'}</span>
+                <span>
+                  {!testnetStatus?.connected
+                    ? 'TESTNET EXECUTION: OFFLINE'
+                    : operationalMode === 'LIVE'
+                      ? 'TESTNET EXECUTION: VIEWING'
+                      : 'TESTNET EXECUTION: LIVE (BACKGROUND)'}
+                </span>
               </button>
             </div>
           </div>
@@ -1441,10 +1495,10 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
             </span>
           </div>
           <div className="text-xl font-black text-purple-300 mt-0.5">
-            {occupiedSlots.length} / {governor.maxActiveSlots}
+            {displaySlots.length} / {governor.maxActiveSlots}
           </div>
           <div className="text-[10px] text-zinc-400 mt-1">
-            ${(governor.marginPerSlotUsd * occupiedSlots.length).toLocaleString()} deployed
+            {isShowingRealTestnet ? 'Real testnet positions' : `$${(governor.marginPerSlotUsd * displaySlots.length).toLocaleString()} deployed`}
           </div>
         </div>
       </div>
@@ -1462,6 +1516,13 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
                 </span>
                 <span className="text-[10px] px-2 py-0.5 rounded bg-zinc-900 border border-zinc-700 text-zinc-300">
                   Pool: ${governor.totalRiskPoolUsd.toLocaleString()} USD
+                </span>
+                <span className={`text-[10px] px-2 py-0.5 rounded font-bold border ${
+                  isShowingRealTestnet
+                    ? 'bg-emerald-950 text-emerald-300 border-emerald-600/60'
+                    : 'bg-zinc-900 text-zinc-500 border-zinc-700'
+                }`}>
+                  {isShowingRealTestnet ? '● SHOWING REAL TESTNET POSITIONS' : 'SHOWING PAPER SIMULATION'}
                 </span>
               </div>
 
@@ -1575,7 +1636,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
             {/* Visual Slots Display */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
               {Array.from({ length: governor.maxActiveSlots }).map((_, slotIdx) => {
-                const occupied = occupiedSlots[slotIdx];
+                const occupied: any = displaySlots[slotIdx];
                 return (
                   <div
                     key={slotIdx}
@@ -1590,7 +1651,11 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
                       <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
                         occupied ? 'bg-emerald-950 text-emerald-300 border border-emerald-700/60' : 'text-zinc-600'
                       }`}>
-                        {occupied ? 'OCCUPIED' : 'STANDBY'}
+                        {occupied
+                          ? occupied.isReal
+                            ? occupied.filled ? 'LIVE POSITION' : 'LIVE ORDER (NEW)'
+                            : 'OCCUPIED'
+                          : 'STANDBY'}
                       </span>
                     </div>
 
@@ -1615,12 +1680,18 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
                           />
                         </div>
                         <div className="flex items-center justify-end gap-1.5 pt-1">
-                          <button
-                            onClick={() => executeCleanSnapback(occupied.symbol)}
-                            className="px-2 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/50 text-[10px] font-bold"
-                          >
-                            FORCE SNAPBACK (+0.5%)
-                          </button>
+                          {occupied.isReal ? (
+                            <span className="text-[9px] text-zinc-500">
+                              Order #{occupied.entryOrderId} · backend chronometer manages exit
+                            </span>
+                          ) : (
+                            <button
+                              onClick={() => executeCleanSnapback(occupied.symbol)}
+                              className="px-2 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/50 text-[10px] font-bold"
+                            >
+                              FORCE SNAPBACK (+0.5%)
+                            </button>
+                          )}
                         </div>
                       </div>
                     ) : (
@@ -1832,10 +1903,11 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
 
                             {!isArmed && !isFilled && (
                               <button
-                                onClick={() => triggerSimulatedFleetCascade(pair.symbol)}
+                                onClick={() => handleTestCascadeClick(pair.symbol)}
                                 className="px-2 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-700 text-[10px] font-mono"
+                                title={isShowingRealTestnet ? 'Fires a real signed order on Binance Futures Testnet' : 'Simulates a cascade in the paper engine'}
                               >
-                                TEST CASCADE
+                                {isShowingRealTestnet ? 'FIRE REAL TEST ORDER' : 'TEST CASCADE'}
                               </button>
                             )}
 
