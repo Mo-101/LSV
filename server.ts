@@ -8,8 +8,11 @@ import { GoogleGenAI } from '@google/genai';
 import WebSocket from 'ws';
 import { finiteNumber } from './src/engine/tradeNumbers';
 import { LiquidationWindow } from './src/engine/liquidationWindow';
+import { getTestnetExecutor } from './src/engine/binanceTestnetExecutor';
 
 dotenv.config();
+
+const testnetExecutor = getTestnetExecutor();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -34,7 +37,14 @@ app.get('/api/health', (_req, res) => {
       binanceConfigured: Boolean(process.env.BINANCE_KEY && process.env.BINANCE_SECRET),
       note: 'Configured does not mean authenticated.',
     },
-    execution: { implemented: false, mode: 'simulation', exchangeOrdersEnabled: false },
+    execution: testnetExecutor
+      ? {
+          implemented: true,
+          mode: 'testnet',
+          exchangeOrdersEnabled: true,
+          activePositions: testnetExecutor.activePositions.size,
+        }
+      : { implemented: false, mode: 'simulation', exchangeOrdersEnabled: false },
   });
 });
 
@@ -642,6 +652,41 @@ const TOP_SENTINEL_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'DOGEUSDT', 'XRPU
 let lastAlertTimes: Record<string, number> = {};
 const liquidationWindow = new LiquidationWindow();
 
+// ================= BINANCE FUTURES TESTNET EXECUTION (real signed orders, fake money) =================
+const MAX_TESTNET_SLOTS = 3;
+const TESTNET_NOTIONAL_USD = 100;
+const CHRONOMETER_MS = 90000;
+
+// Best-effort quantity precision by price magnitude — there is no exchangeInfo
+// lot-size lookup here, so orders on symbols with unusual step sizes may be
+// rejected by Binance. A rejection is logged and treated as a no-op.
+function estimateTestnetQuantity(notionalUsd: number, price: number): number {
+  const raw = notionalUsd / price;
+  if (price >= 1000) return parseFloat(raw.toFixed(3));
+  if (price >= 10) return parseFloat(raw.toFixed(2));
+  if (price >= 1) return parseFloat(raw.toFixed(1));
+  return Math.max(1, Math.round(raw));
+}
+
+if (testnetExecutor) {
+  testnetExecutor.startUserDataStream((symbol, orderId, status) => {
+    const pos = testnetExecutor.activePositions.get(symbol);
+    if (!pos) return;
+    if (status === 'FILLED' && orderId === pos.entryOrderId && !pos.filled) {
+      pos.filled = true;
+      const tpSide = pos.side === 'BUY' ? 'SELL' : 'BUY';
+      testnetExecutor.placePostOnlyLimit(symbol, tpSide, pos.targetTp, pos.quantity).then(tp => {
+        if (tp.ok && tp.orderId) pos.tpOrderId = tp.orderId;
+        console.log(`[TESTNET ORDER FILLED] ${symbol} entry ${orderId} -> TP order ${tp.orderId ?? 'FAILED: ' + tp.error}`);
+      });
+    } else if (status === 'FILLED' && orderId === pos.tpOrderId) {
+      clearTimeout(pos.chronometer);
+      testnetExecutor.activePositions.delete(symbol);
+      console.log(`[TESTNET POSITION CLOSED] ${symbol} take-profit filled`);
+    }
+  });
+}
+
 function startServerSideFleetScanner(stream: 'all' | 'liquidations' | 'tickers' = 'all') {
   console.log('[TELEGRAM SENTINEL] Starting 24/7 Autonomous Background Sentinel Engine...');
 
@@ -697,6 +742,43 @@ function startServerSideFleetScanner(stream: 'all' | 'liquidations' | 'tickers' 
             'Time-Stop Invariant': '90-Second Mechanical Countdown',
             'Source': 'Binance Futures Engine Stream (!forceOrder@arr)'
           });
+
+          if (testnetExecutor && !testnetExecutor.activePositions.has(symbol) && testnetExecutor.activePositions.size < MAX_TESTNET_SLOTS) {
+            const entrySide: 'BUY' | 'SELL' = isLongCascade ? 'BUY' : 'SELL';
+            const quantity = estimateTestnetQuantity(TESTNET_NOTIONAL_USD, calculatedFloor);
+            console.log(`[TESTNET ORDER DISPATCH] ${symbol} ${entrySide} ${quantity} @ ${calculatedFloor.toFixed(6)} (GTX post-only)`);
+            testnetExecutor.placePostOnlyLimit(symbol, entrySide, calculatedFloor, quantity).then(result => {
+              if (!result.ok || !result.orderId) {
+                console.warn(`[TESTNET ORDER REJECTED] ${symbol}: ${result.error}`);
+                return;
+              }
+              console.log(`[TESTNET ORDER CREATED] ${symbol} orderId=${result.orderId}`);
+              const chronometer = setTimeout(async () => {
+                const pos = testnetExecutor.activePositions.get(symbol);
+                if (!pos) return;
+                if (!pos.filled) {
+                  await testnetExecutor.cancelOrder(symbol, pos.entryOrderId);
+                  console.log(`[CHRONOMETER EXPIRED] ${symbol} entry order canceled (no fill in 90s)`);
+                } else {
+                  await testnetExecutor.placeMarketOrder(symbol, pos.side === 'BUY' ? 'SELL' : 'BUY', pos.quantity);
+                  console.log(`[CHRONOMETER EXPIRED] ${symbol} emergency market close (TP not hit in 90s)`);
+                }
+                testnetExecutor.activePositions.delete(symbol);
+              }, CHRONOMETER_MS);
+              testnetExecutor.activePositions.set(symbol, {
+                symbol,
+                side: entrySide,
+                entryOrderId: result.orderId!,
+                entryPrice: calculatedFloor,
+                quantity,
+                targetTp,
+                filled: false,
+                chronometer,
+                openedAt: Date.now(),
+              });
+              console.log(`[CHRONOMETER ARMED] ${symbol} 90s watchdog started`);
+            });
+          }
         }
       } catch (err: any) {
         // non-blocking
