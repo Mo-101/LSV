@@ -3,3 +3,8 @@ dist/
 .env
 .env.*
 !.env.example
+__pycache__/
+*.pyc
+.claude/settings.local.json
+
+.lsv-state/

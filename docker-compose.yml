@@ -7,3 +7,8 @@ services:
       - "4500:3000"
     env_file:
       - .env
+    volumes:
+      - lsv-state:/app/.lsv-state
+
+volumes:
+  lsv-state:

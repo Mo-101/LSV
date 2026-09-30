@@ -9,6 +9,10 @@ import WebSocket from 'ws';
 import { finiteNumber } from './src/engine/tradeNumbers';
 import { LiquidationWindow } from './src/engine/liquidationWindow';
 import { getTestnetExecutor } from './src/engine/binanceTestnetExecutor';
+import { ConfigStore, acquireStateLock } from './src/engine/runtimeConfig';
+import { ExecutionCoordinator } from './src/engine/executionCoordinator';
+import { ShadowExecution } from './src/engine/shadowExecution';
+import { AutomaticBatches } from './src/engine/automaticBatches';
 
 dotenv.config();
 
@@ -19,6 +23,46 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json());
+const stateDir = process.env.LSV_STATE_DIR || path.join(__dirname, '.lsv-state');
+acquireStateLock(stateDir);
+const configStore = new ConfigStore(path.join(stateDir, 'config.json'));
+const coordinator = testnetExecutor ? new ExecutionCoordinator(testnetExecutor, configStore, path.join(stateDir, 'execution.json')) : null;
+const shadowExecution = new ShadowExecution(configStore, path.join(stateDir, 'shadow-tape.json'));
+const automaticBatches = new AutomaticBatches({
+  config: () => configStore.get(),
+  status: () => coordinator?.status() ?? { connected: false, positions: [] },
+  submit: async candidate => {
+    if (!coordinator) throw new Error('Binance demo is not configured');
+    return coordinator.submit(candidate.symbol, candidate.floor, true);
+  },
+});
+app.get('/api/automation/status', (_req, res) => res.json(automaticBatches.status()));
+app.get('/api/config', (_req, res) => res.json(configStore.get()));
+app.post('/api/config', async (req, res) => {
+  try {
+    const update = async () => configStore.update(req.body.patch, req.body.revision);
+    const config = coordinator ? await coordinator.serial(update) : await update();
+    res.json(config);
+  } catch (error: any) { res.status(400).json({ error: error.message }); }
+});
+app.get('/api/shadow/status', (_req, res) => res.json(shadowExecution.status()));
+app.post('/api/testnet/reconcile', async (req, res) => {
+  try {
+    if (!coordinator) throw new Error('Testnet not configured');
+    const symbol = String(req.body.symbol || '').toUpperCase();
+    if (!/^[A-Z0-9]{2,20}USDT$/.test(symbol)) throw new Error('Invalid symbol');
+    res.json(await coordinator.adopt(symbol));
+  } catch (error: any) { res.status(400).json({ error: error.message }); }
+});
+app.post('/api/execution/halt', async (_req, res) => {
+  try {
+    const halt = async () => configStore.update({ halted: true }, configStore.get().revision);
+    if (coordinator) await coordinator.serial(halt); else await halt();
+    const status = await coordinator?.reconcile();
+    await shadowExecution.tick();
+    res.json({ config: configStore.get(), status, message: 'Entries halted. Check exchange slots for confirmed closures; unmanaged exposure requires adoption.' });
+  } catch (error: any) { res.status(500).json({ error: error.message }); }
+});
 
 // ================= LIVE EVENT STREAM (SSE) — powers frontend toast notifications =================
 type SentinelEvent = { type: string; title: string; detail: string; level: 'info' | 'success' | 'warning' | 'error'; timestamp: string };
@@ -47,40 +91,8 @@ app.get('/api/events', (req, res) => {
 
 // Real Binance Futures Testnet account/position status — proves the UI is
 // actually wired to the exchange, distinct from the simulated shadow trader.
-app.get('/api/testnet/status', async (_req, res) => {
-  if (!testnetExecutor) {
-    return res.json({ connected: false, balance: null, positions: [] });
-  }
-  const snapshot = await testnetExecutor.getAccountSnapshot();
-  if (!snapshot.ok) {
-    return res.json({ connected: false, balance: null, error: snapshot.error, positions: [] });
-  }
-  const positions = Array.from(testnetExecutor.activePositions.values()).map(p => {
-    const real = (snapshot.positions || []).find(rp => rp.symbol === p.symbol);
-    const notional = Math.abs(p.entryPrice * p.quantity);
-    const pnlUsd = real ? real.unrealizedProfit : 0;
-    const pnlPct = notional > 0 ? (pnlUsd / notional) * 100 : 0;
-    return {
-      symbol: p.symbol,
-      side: p.side,
-      entryOrderId: p.entryOrderId,
-      entryPrice: p.entryPrice,
-      quantity: p.quantity,
-      targetTp: p.targetTp,
-      filled: p.filled,
-      tpOrderId: p.tpOrderId ?? null,
-      openedAt: p.openedAt,
-      pnlUsd,
-      pnlPct,
-      holdSeconds: Math.floor((Date.now() - (p.fillTime ?? p.openedAt)) / 1000),
-    };
-  });
-  res.json({
-    connected: true,
-    balance: snapshot.usdtBalance ?? null,
-    error: null,
-    positions,
-  });
+app.get('/api/testnet/status', (_req, res) => {
+  res.json(coordinator?.status() ?? { connected: false, stale: true, balance: null, positions: [], error: 'Testnet credentials not configured' });
 });
 
 const feedHealth = {
@@ -104,11 +116,13 @@ app.get('/api/health', (_req, res) => {
       ? {
           implemented: true,
           mode: 'testnet',
-          exchangeOrdersEnabled: true,
-          activePositions: testnetExecutor.activePositions.size,
-          entryRule: `145% bid absorption floor (long cascades only), TP +${SNAPBACK_TP_PCT * 100}%, 90s hold from fill`,
+          exchangeOrdersEnabled: configStore.get().mode === 'LIVE' && !configStore.get().halted,
+          activePositions: coordinator?.status().positions.length ?? 0,
+          config: configStore.get(),
+          entryRule: `${configStore.get().absorptionBuffer * 100}% bid absorption, TP +${configStore.get().takeProfitPct * 100}%, ${configStore.get().holdSeconds}s hold`,
+          entryTimeoutSeconds: configStore.get().entryTimeoutSeconds,
         }
-      : { implemented: false, mode: 'simulation', exchangeOrdersEnabled: false },
+      : { implemented: false, mode: configStore.get().mode, exchangeOrdersEnabled: false },
   });
 });
 
@@ -118,7 +132,7 @@ const DEFAULT_TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
 
 // Server-side helper to send Telegram alerts directly
 async function sendTelegramAlert(title: string, details: Record<string, string>) {
-  if (!DEFAULT_TG_BOT_TOKEN || !DEFAULT_TG_CHAT_ID) return;
+  if (process.env.LSV_AUTOMATIC_ALERTS === '0' || !DEFAULT_TG_BOT_TOKEN || !DEFAULT_TG_CHAT_ID) return;
   alertHealth.attempts++;
   try {
     const text = `<b>${title}</b>\n` + Object.entries(details).map(([k, v]) => `• <b>${k}:</b> ${v}`).join('\n');
@@ -717,14 +731,6 @@ let lastAlertTimes: Record<string, number> = {};
 const liquidationWindow = new LiquidationWindow();
 
 // ================= BINANCE FUTURES TESTNET EXECUTION (real signed orders, fake money) =================
-const MAX_TESTNET_SLOTS = 3;
-const TESTNET_NOTIONAL_USD = 100;
-const CHRONOMETER_MS = 90000;
-
-// shadow_trader.py parameters
-const ABSORPTION_BUFFER = 1.45; // resting bids must absorb 145% of the cascade
-const SNAPBACK_TP_PCT = 0.005;  // +0.50% take-profit from the entry
-
 interface AbsorptionFloor {
   floor: number;
   bestBid: number;
@@ -733,15 +739,21 @@ interface AbsorptionFloor {
   targetUsd: number;
 }
 
-// Walks the live mainnet bid book down from the best bid until cumulative
-// resting USD reaches 145% of the cascade; that price is the entry. The book
-// sets the depth: thin books push the floor deeper, thick books keep it
-// shallow. A 1000-level snapshot is taken at the trigger moment because the
-// 20-level stream often can't hold 145% of a real cascade on altcoins.
-async function computeAbsorptionFloor(symbol: string, cascadeUsd: number): Promise<AbsorptionFloor | null> {
-  const targetUsd = cascadeUsd * ABSORPTION_BUFFER;
+// Walks the bid book down from the best bid until cumulative resting USD
+// reaches 145% of the cascade; that price is the entry. The book sets the
+// depth: thin books push the floor deeper, thick books keep it shallow.
+// A 1000-level snapshot is taken at the trigger moment because the 20-level
+// stream often can't hold 145% of a real cascade on altcoins.
+// 'mainnet' reads fapi.binance.com (drives alerts and the real-tape shadow
+// model); 'testnet' reads testnet.binancefuture.com so demo orders are priced
+// against the book they will actually rest on. Testnet books are thin, so if
+// the visible book cannot hold the full cushion the deepest bid is used as
+// the floor rather than dropping the candidate.
+async function computeAbsorptionFloor(symbol: string, cascadeUsd: number, venue: 'mainnet' | 'testnet' = 'mainnet'): Promise<AbsorptionFloor | null> {
+  const targetUsd = cascadeUsd * configStore.get().absorptionBuffer;
+  const base = venue === 'testnet' ? 'https://testnet.binancefuture.com' : 'https://fapi.binance.com';
   try {
-    const res = await fetch(`https://fapi.binance.com/fapi/v1/depth?symbol=${symbol}&limit=1000`, {
+    const res = await fetch(`${base}/fapi/v1/depth?symbol=${symbol}&limit=1000`, {
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return null;
@@ -756,170 +768,39 @@ async function computeAbsorptionFloor(symbol: string, cascadeUsd: number): Promi
         return { floor: price, bestBid: parseFloat(bids[0][0]), levels: i + 1, restingUsd, targetUsd };
       }
     }
+    if (venue === 'testnet') {
+      return { floor: parseFloat(bids[bids.length - 1][0]), bestBid: parseFloat(bids[0][0]), levels: bids.length, restingUsd, targetUsd };
+    }
     return null;
   } catch {
     return null;
   }
 }
 
-// Best-effort quantity precision by price magnitude — there is no exchangeInfo
-// lot-size lookup here, so orders on symbols with unusual step sizes may be
-// rejected by Binance. A rejection is logged and treated as a no-op.
-function estimateTestnetQuantity(notionalUsd: number, price: number): number {
-  const raw = notionalUsd / price;
-  if (price >= 1000) return parseFloat(raw.toFixed(3));
-  if (price >= 10) return parseFloat(raw.toFixed(2));
-  if (price >= 1) return parseFloat(raw.toFixed(1));
-  return Math.max(1, Math.round(raw));
-}
-
-// Unfilled at expiry: cancel the entry. Filled: pull the resting TP first
-// (otherwise it survives the market close and could later open an unintended
-// opposite position), then flatten with a reduce-only market order.
-async function expireTestnetPosition(symbol: string) {
-  const pos = testnetExecutor?.activePositions.get(symbol);
-  if (!testnetExecutor || !pos) return;
-  if (!pos.filled) {
-    await testnetExecutor.cancelOrder(symbol, pos.entryOrderId);
-    console.log(`[CHRONOMETER EXPIRED] ${symbol} entry order canceled (no fill in 90s)`);
-    broadcastEvent({
-      type: 'TESTNET_CHRONOMETER_EXPIRED',
-      title: `${symbol} entry canceled`,
-      detail: 'No fill within 90s — order canceled.',
-      level: 'warning',
-    });
-  } else {
-    if (pos.tpOrderId) await testnetExecutor.cancelOrder(symbol, pos.tpOrderId);
-    await testnetExecutor.placeMarketOrder(symbol, pos.side === 'BUY' ? 'SELL' : 'BUY', pos.quantity, true);
-    console.log(`[CHRONOMETER EXPIRED] ${symbol} emergency market close (TP not hit within 90s of fill)`);
-    broadcastEvent({
-      type: 'TESTNET_CHRONOMETER_EXPIRED',
-      title: `${symbol} emergency close`,
-      detail: 'Take-profit not hit within 90s of the fill — position closed at market.',
-      level: 'warning',
-    });
-  }
-  testnetExecutor.activePositions.delete(symbol);
-}
-
-async function dispatchTestnetEntry(
-  symbol: string,
-  entrySide: 'BUY' | 'SELL',
-  calculatedFloor: number,
-  targetTp: number
-): Promise<{ ok: boolean; reason?: string; orderId?: number }> {
-  if (!testnetExecutor) return { ok: false, reason: 'Testnet executor not configured' };
-  if (testnetExecutor.activePositions.has(symbol)) return { ok: false, reason: `${symbol} already has an active position` };
-  if (testnetExecutor.activePositions.size >= MAX_TESTNET_SLOTS) return { ok: false, reason: 'Max concurrent testnet slots reached' };
-
-  const quantity = estimateTestnetQuantity(TESTNET_NOTIONAL_USD, calculatedFloor);
-  console.log(`[TESTNET ORDER DISPATCH] ${symbol} ${entrySide} ${quantity} @ ${calculatedFloor.toFixed(6)} (GTX post-only)`);
-  broadcastEvent({
-    type: 'TESTNET_ORDER_DISPATCH',
-    title: `${symbol} order dispatched`,
-    detail: `${entrySide} ${quantity} @ $${calculatedFloor.toFixed(4)} (GTX post-only, testnet)`,
-    level: 'info',
-  });
-
-  const result = await testnetExecutor.placePostOnlyLimit(symbol, entrySide, calculatedFloor, quantity);
-  if (!result.ok || !result.orderId) {
-    console.warn(`[TESTNET ORDER REJECTED] ${symbol}: ${result.error}`);
-    broadcastEvent({
-      type: 'TESTNET_ORDER_REJECTED',
-      title: `${symbol} order rejected`,
-      detail: result.error || 'Unknown rejection reason',
-      level: 'error',
-    });
-    return { ok: false, reason: result.error };
-  }
-
-  console.log(`[TESTNET ORDER CREATED] ${symbol} orderId=${result.orderId}`);
-  broadcastEvent({
-    type: 'TESTNET_ORDER_CREATED',
-    title: `${symbol} order created`,
-    detail: `Binance testnet Order ID: ${result.orderId} — 90s chronometer armed`,
-    level: 'success',
-  });
-
-  const chronometer = setTimeout(() => expireTestnetPosition(symbol), CHRONOMETER_MS);
-
-  testnetExecutor.activePositions.set(symbol, {
-    symbol,
-    side: entrySide,
-    entryOrderId: result.orderId!,
-    entryPrice: calculatedFloor,
-    quantity,
-    targetTp,
-    filled: false,
-    chronometer,
-    openedAt: Date.now(),
-  });
-  console.log(`[CHRONOMETER ARMED] ${symbol} 90s watchdog started`);
-  return { ok: true, orderId: result.orderId };
-}
-
-// Manual test trigger — proves the real signed order path works without
-// waiting for a genuine >=$50k/30s liquidation cascade. Testnet only (fake
-// money); capped by the same MAX_TESTNET_SLOTS concurrency guard as the
-// real path, so the blast radius of an unauthenticated call is bounded.
 app.post('/api/testnet/force-test-order', async (req, res) => {
-  if (!testnetExecutor) {
-    return res.status(400).json({ ok: false, error: 'Testnet executor not configured (BINANCE_KEY/BINANCE_SECRET missing)' });
-  }
-  const symbol = String(req.query.symbol || req.body?.symbol || 'SOLUSDT').toUpperCase();
-  // Default: rest at the best bid so the test order actually fills in a calm
-  // market and exercises the full fill -> TP -> chronometer lifecycle.
-  // ?offsetPct=0.8 reproduces the real cascade floor (0.8% below) instead.
-  const offsetPct = Number(req.query.offsetPct ?? 0);
   try {
+    if (!testnetExecutor || !coordinator) throw new Error('Testnet not configured');
+    const symbol = String(req.query.symbol || req.body?.symbol || 'SOLUSDT').toUpperCase();
+    if (!/^[A-Z0-9]{2,20}USDT$/.test(symbol)) throw new Error('Invalid symbol');
+    const offsetPct = Number(req.query.offsetPct ?? 0);
+    if (!Number.isFinite(offsetPct) || offsetPct < 0 || offsetPct > 5) throw new Error('Invalid offset');
     const book = await testnetExecutor.getBookTicker(symbol);
-    if (!book) {
-      return res.status(400).json({ ok: false, error: `Could not fetch order book for ${symbol}` });
-    }
-    const entry = offsetPct > 0 ? book.bid * (1 - offsetPct / 100) : book.bid;
-    const targetTp = entry * 1.005;
-    const result = await dispatchTestnetEntry(symbol, 'BUY', entry, targetTp);
-    res.json({ ...result, symbol, bestBid: book.bid, bestAsk: book.ask, entry, targetTp });
-  } catch (err: any) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
+    if (!book) throw new Error('Demo order book unavailable');
+    const entry = book.bid * (1 - offsetPct / 100);
+    res.json({ ...await coordinator.submit(symbol, entry), symbol, entry, executionVenue: 'BINANCE_TESTNET', fillGuaranteed: false });
+  } catch (error: any) { res.status(400).json({ ok: false, error: error.message }); }
 });
-
-if (testnetExecutor) {
-  testnetExecutor.startUserDataStream((symbol, orderId, status) => {
-    const pos = testnetExecutor.activePositions.get(symbol);
-    if (!pos) return;
-    if (status === 'FILLED' && orderId === pos.entryOrderId && !pos.filled) {
-      pos.filled = true;
-      pos.fillTime = Date.now();
-      // shadow_trader.py measures the 90s hold from the fill, not from when
-      // the entry was placed.
-      clearTimeout(pos.chronometer);
-      pos.chronometer = setTimeout(() => expireTestnetPosition(symbol), CHRONOMETER_MS);
-      const tpSide = pos.side === 'BUY' ? 'SELL' : 'BUY';
-      testnetExecutor.placePostOnlyLimit(symbol, tpSide, pos.targetTp, pos.quantity, true).then(tp => {
-        if (tp.ok && tp.orderId) pos.tpOrderId = tp.orderId;
-        console.log(`[TESTNET ORDER FILLED] ${symbol} entry ${orderId} -> TP order ${tp.orderId ?? 'FAILED: ' + tp.error}`);
-        broadcastEvent({
-          type: 'TESTNET_ENTRY_FILLED',
-          title: `${symbol} entry filled`,
-          detail: tp.ok ? `Take-profit order placed at $${pos.targetTp.toFixed(4)}` : `TP placement failed: ${tp.error}`,
-          level: tp.ok ? 'success' : 'error',
-        });
-      });
-    } else if (status === 'FILLED' && orderId === pos.tpOrderId) {
-      clearTimeout(pos.chronometer);
-      testnetExecutor.activePositions.delete(symbol);
-      console.log(`[TESTNET POSITION CLOSED] ${symbol} take-profit filled`);
-      broadcastEvent({
-        type: 'TESTNET_POSITION_CLOSED',
-        title: `${symbol} take-profit hit`,
-        detail: 'Position closed on Binance Futures Testnet.',
-        level: 'success',
-      });
-    }
-  });
-}
+app.post('/api/shadow/arm', async (req, res) => {
+  try {
+    const symbol = String(req.body.symbol || '').toUpperCase();
+    if (!/^[A-Z0-9]{2,20}USDT$/.test(symbol)) throw new Error('Invalid symbol');
+    const response = await fetch(`https://fapi.binance.com/fapi/v1/depth?symbol=${symbol}&limit=5`, { signal: AbortSignal.timeout(5000) });
+    const book = await response.json();
+    if (!response.ok || !book.bids?.length) throw new Error('Mainnet book unavailable');
+    const [price, quantity] = book.bids[0].map(Number);
+    res.json({ ok: true, order: shadowExecution.arm(symbol, price, price * quantity) });
+  } catch (error: any) { res.status(400).json({ error: error.message }); }
+});
 
 function startServerSideFleetScanner(stream: 'all' | 'liquidations' | 'tickers' = 'all') {
   console.log('[TELEGRAM SENTINEL] Starting 24/7 Autonomous Background Sentinel Engine...');
@@ -958,7 +839,7 @@ function startServerSideFleetScanner(stream: 'all' | 'liquidations' | 'tickers' 
         // TRIGGER THRESHOLD:
         // When real liquidations exceed $50,000 USD within 30 seconds on key pairs
         // Cooldown: 1 alert per symbol every 60 seconds
-        if (cluster.totalUsd >= 50000 && now - lastSent > 60000) {
+        if (cluster.totalUsd >= configStore.get().minLiquidationUsd && now - lastSent > 60000) {
           lastAlertTimes[symbol] = now;
           const isLongCascade = side === 'SELL';
           const fmt = (n: number) => `$${n >= 10 ? n.toFixed(2) : n.toFixed(4)}`;
@@ -977,12 +858,23 @@ function startServerSideFleetScanner(stream: 'all' | 'liquidations' | 'tickers' 
             absorption = await computeAbsorptionFloor(symbol, cluster.totalUsd);
             if (absorption) {
               const depthPct = ((absorption.bestBid - absorption.floor) / absorption.bestBid) * 100;
-              console.log(`[ABSORPTION FLOOR] ${symbol} 145% of $${Math.round(cluster.totalUsd).toLocaleString()} = $${Math.round(absorption.targetUsd).toLocaleString()} reached ${absorption.levels} levels down at ${fmt(absorption.floor)} (${depthPct.toFixed(3)}% below best bid)`);
-              if (testnetExecutor) {
-                await dispatchTestnetEntry(symbol, 'BUY', absorption.floor, absorption.floor * (1 + SNAPBACK_TP_PCT));
-              }
+              console.log(`[ABSORPTION FLOOR] ${symbol} ${configStore.get().absorptionBuffer * 100}% of $${Math.round(cluster.totalUsd).toLocaleString()} = $${Math.round(absorption.targetUsd).toLocaleString()} reached ${absorption.levels} levels down at ${fmt(absorption.floor)} (${depthPct.toFixed(3)}% below best bid)`);
             } else {
-              console.log(`[ABSORPTION FLOOR] ${symbol} no floor: book cannot absorb 145% of $${Math.round(cluster.totalUsd).toLocaleString()} within 1000 levels (or depth unavailable) — no trade`);
+              console.log(`[ABSORPTION FLOOR] ${symbol} no floor: book cannot absorb ${configStore.get().absorptionBuffer * 100}% of $${Math.round(cluster.totalUsd).toLocaleString()} within 1000 levels (or depth unavailable) — no trade`);
+            }
+            const config = configStore.get();
+            if (!config.halted && config.autoExecute && (!config.allowedSymbols.length || config.allowedSymbols.includes(symbol))) {
+              try {
+                if (config.mode === 'LIVE' && coordinator) {
+                  // Demo orders rest on the testnet book, so the floor is priced there.
+                  const demoFloor = await computeAbsorptionFloor(symbol, cluster.totalUsd, 'testnet');
+                  if (demoFloor) automaticBatches.offer({ symbol, liquidationUsd: cluster.totalUsd, detectedAt: now, floor: demoFloor.floor });
+                  else console.log(`[ABSORPTION FLOOR] ${symbol} testnet depth unavailable — no demo entry`);
+                }
+                if (config.mode === 'PAPER' && absorption) shadowExecution.arm(symbol, absorption.floor, absorption.restingUsd, true);
+              } catch (error: any) {
+                broadcastEvent({ type: 'ENTRY_SKIPPED', title: `${symbol} entry skipped`, detail: error.message, level: 'warning' });
+              }
             }
           }
 
@@ -990,9 +882,9 @@ function startServerSideFleetScanner(stream: 'all' | 'liquidations' | 'tickers' 
             'Cascade Type': isLongCascade ? '🔴 LONG SQUEEZE (Forced Market Sells)' : '🟢 SHORT SQUEEZE (Forced Market Buys)',
             'Liquidation Size': `$${(cluster.totalUsd).toLocaleString('en-US', { maximumFractionDigits: 0 })} USD (${cluster.count} orders in 30s)`,
             'Last Forced Price': fmt(price),
-            '145% Absorption Floor': absorption ? `${fmt(absorption.floor)} (${absorption.levels} bid levels)` : isLongCascade ? 'Book too thin — no trade' : 'Short squeeze — long-only engine, no trade',
-            'Target Snapback (+0.50%)': absorption ? fmt(absorption.floor * (1 + SNAPBACK_TP_PCT)) : '—',
-            'Time-Stop Invariant': '90 seconds from fill',
+            [`${configStore.get().absorptionBuffer * 100}% Absorption Floor`]: absorption ? `${fmt(absorption.floor)} (${absorption.levels} bid levels)` : isLongCascade ? 'Book too thin — no trade' : 'Short squeeze — long-only engine, no trade',
+            'Target Snapback (+0.50%)': absorption ? fmt(absorption.floor * (1 + configStore.get().takeProfitPct)) : '—',
+            'Time-Stop Invariant': `${configStore.get().holdSeconds} seconds from fill`,
             'Source': 'Binance Futures Engine Stream (!forceOrder@arr)'
           });
         }
@@ -1092,7 +984,17 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Liquidation Vacuum Engine running at http://0.0.0.0:${PORT}`);
     // Start background scanner after server is up
-    setTimeout(startServerSideFleetScanner, 2000);
+    if (process.env.LSV_DISABLE_WORKERS !== '1') {
+      void coordinator?.reconcile();
+      let reconciling = false;
+      setInterval(async () => {
+        if (reconciling) return;
+        reconciling = true;
+        try { await coordinator?.reconcile(); await shadowExecution.tick(); await automaticBatches.tick(); }
+        finally { reconciling = false; }
+      }, 5000);
+      setTimeout(startServerSideFleetScanner, 2000);
+    }
   });
 }
 

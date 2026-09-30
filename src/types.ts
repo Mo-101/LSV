@@ -176,7 +176,7 @@ export interface ConcurrencyGovernorConfig {
   absorptionBuffer: number;
   feeDragPct: number; // e.g. 0.07% round trip (0.02% maker + 0.05% taker)
   toxicOiThresholdPct: number; // e.g. 15% plunge triggers TOXIC_EVENT_ABORT
-  microCapitalTier: 'INSTITUTIONAL_250K' | 'MICRO_FLIGHT_250' | 'MINI_MICRO_10';
+  microCapitalTier: 'INSTITUTIONAL_250K' | 'MICRO_FLIGHT_250' | 'MINI_MICRO_10' | 'CUSTOM';
 }
 
 export type OperationalMode = 'SIGNAL_ONLY' | 'PAPER' | 'LIVE';

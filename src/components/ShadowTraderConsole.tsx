@@ -1,3 +1,5 @@
+import { UnifiedExecutionPanel } from './UnifiedExecutionPanel';
+import { submitTestnetOrder } from '../engine/testnetSubmission';
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { 
   Activity, 
@@ -77,18 +79,18 @@ export const TOP_30_UNIVERSE = [
 ];
 
 const DEFAULT_GOVERNOR: ConcurrencyGovernorConfig = {
-  maxActiveSlots: 3,
-  totalRiskPoolUsd: 250000,
-  marginPerSlotUsd: 25000,
+  maxActiveSlots: 2,
+  totalRiskPoolUsd: 10,
+  marginPerSlotUsd: 5,
   usdQueueHurdle: 150000,
-  autoExecute: true,
+  autoExecute: false,
   minCviThreshold: 3.0,
   decelerationCap: 65,
   baseDropPct: 0.008,
   absorptionBuffer: 1.45,
   feeDragPct: 0.07, // 0.07% round-trip exchange fee deduction
   toxicOiThresholdPct: 15, // 15% OI drop in <60s triggers TOXIC_EVENT_ABORT
-  microCapitalTier: 'INSTITUTIONAL_250K',
+  microCapitalTier: 'MINI_MICRO_10',
 };
 
 const DEFAULT_WEBHOOK_CONFIG: WebhookDispatcherConfig = {
@@ -130,7 +132,7 @@ interface TestnetStatus {
 
 export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
   // 1. Operational Mode: 3-way toggle [SIGNAL_ONLY, PAPER, LIVE]
-  const [operationalMode, setOperationalMode] = useState<OperationalMode>('PAPER');
+  const [operationalMode, setOperationalMode] = useState<OperationalMode>('SIGNAL_ONLY');
 
   // Real Binance Futures Testnet account/position status, polled from the backend.
   // This is the actual exchange state — distinct from the simulated fleet below.
@@ -142,9 +144,10 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
       try {
         const res = await fetch('/api/testnet/status');
         const data = await res.json();
+        if (!res.ok) throw new Error('Status unavailable');
         if (!cancelled) setTestnetStatus(data);
       } catch {
-        if (!cancelled) setTestnetStatus(prev => prev ?? { connected: false, balance: null, positions: [] });
+        if (!cancelled) setTestnetStatus(previous => ({ connected: false, balance: previous?.balance ?? null, positions: previous?.positions ?? [] }));
       }
     };
     poll();
@@ -230,7 +233,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
   // positions instead of the client-side paper simulation. The paper
   // simulation (fleet state, WS ticks, etc.) keeps running unaffected either
   // way — this only changes what the Slot panel reads from.
-  const isShowingRealTestnet = operationalMode === 'LIVE' && Boolean(testnetStatus?.connected);
+  const isShowingRealTestnet = operationalMode === 'LIVE';
   const realSlots = useMemo(() => {
     return (testnetStatus?.positions || []).map(p => ({
       symbol: p.symbol,
@@ -243,7 +246,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
       entryOrderId: p.entryOrderId,
     }));
   }, [testnetStatus]);
-  const displaySlots = isShowingRealTestnet ? realSlots : occupiedSlots;
+  const displaySlots = realSlots;
 
   // Dispatch signal card generator
   const dispatchSignal = useCallback((card: Omit<DispatchedSignalCard, 'id' | 'timestamp' | 'destinations'>) => {
@@ -411,50 +414,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
               return { ...item, tickVelocity: currentVel };
             }));
 
-            // If ARMED, authenticate real USD queue penetration
-            setFleet(prev => prev.map(item => {
-              if (operationalMode !== 'PAPER' || !isScanningActive || isHalted || !governor.autoExecute) return item;
-              if (item.symbol !== selectedPair || item.status !== 'ARMED') return item;
-              if (data.m === true && item.armedPrice && p <= item.armedPrice) {
-                const nextFillUsd = (item.accumulatedFillUsd || 0) + tradeUsd;
-                if (nextFillUsd >= governor.usdQueueHurdle) {
-                  // Concurrency Governor Slot Allocation
-                  const currentlyOccupied = prev.filter(x => x.status === 'FILLED').length;
-                  if (currentlyOccupied < governor.maxActiveSlots) {
-                    const allocatedSlot = currentlyOccupied + 1;
-                    const clearanceSec = item.fillTime ? ((now - item.fillTime) / 1000).toFixed(1) : '1.8';
 
-                    // Dispatch Detonation Alert
-                    dispatchSignal({
-                      type: 'FILLED',
-                      symbol: item.symbol,
-                      title: `🚨 [AIR POCKET DETONATION] — ${item.symbol}`,
-                      badgeColor: 'emerald',
-                      metrics: {
-                        'Vacuum Metric': `CVI ${item.cvi.toFixed(2)}x (Thin Book)`,
-                        'Queue Hurdle': `$${governor.usdQueueHurdle.toLocaleString()} Absorbed (${clearanceSec}s)`,
-                        'Net Entry': `$${item.armedPrice.toFixed(4)} (Post-Only Filled)`,
-                        'Target TP': `$${(item.targetTp || item.armedPrice * 1.005).toFixed(4)} (+0.50% Snapback)`,
-                        'Chronometer': '90s Mechanical Countdown',
-                        'Execution': `Active (${operationalMode} Mode Slot #${allocatedSlot})`
-                      },
-                      rawPayload: `🚨 [AIR POCKET DETONATION] — ${item.symbol}\n• Queue: $150,000 Absorbed (${clearanceSec}s)\n• Entry: $${item.armedPrice.toFixed(4)}\n• TP: $${(item.targetTp || item.armedPrice * 1.005).toFixed(4)}\n• Mode: ${operationalMode}`
-                    });
-
-                    return {
-                      ...item,
-                      status: 'FILLED',
-                      fillTime: now,
-                      accumulatedFillUsd: nextFillUsd,
-                      activeSlot: allocatedSlot,
-                      holdSeconds: 0,
-                    };
-                  }
-                }
-                return { ...item, accumulatedFillUsd: nextFillUsd };
-              }
-              return item;
-            }));
           }
         } catch {
           // ignore corrupted frame
@@ -485,301 +445,17 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
     };
   }, [selectedPair, governor.usdQueueHurdle, governor.maxActiveSlots, governor.autoExecute, operationalMode, isScanningActive, isHalted, dispatchSignal]);
 
-  // ================= SIMULATED FLEET ENGINE DYNAMICS =================
-  useEffect(() => {
-    if (!isScanningActive || isHalted) return;
-
-    const fleetInterval = setInterval(() => {
-      const now = Date.now();
-
-      setFleet(prev => {
-        let activeFilledCount = prev.filter(p => p.status === 'FILLED').length;
-
-        return prev.map(pair => {
-          let updatedPair = { ...pair };
-          if (pair.symbol !== selectedPair && pair.status !== 'FILLED') {
-            const jitter = (Math.random() - 0.505) * 0.0015;
-            const nextPrice = Math.max(0.0001, pair.price * (1 + jitter));
-            const drop = Math.max(0, (pair.refPrice - nextPrice) / pair.refPrice);
-            
-            // Periodically form realistic orderbook vacuum pockets (CVI > 3.0) when displacement reaches >=0.8%
-            const baseCvi = drop >= 0.008 ? 3.2 + Math.random() * 1.6 : pair.cvi + (Math.random() - 0.5) * 0.15;
-            const syntheticCvi = Math.min(5.5, Math.max(1.2, baseCvi));
-            const vel = Math.floor(Math.max(8, Math.min(60, pair.tickVelocity + (Math.random() - 0.5) * 6)));
-            
-            // Random low-probability toxic insider exploit simulation (OI sudden plunge > 15%)
-            const currentOiPlunge = pair.oiPlungePct || 0;
-
-            updatedPair = {
-              ...updatedPair,
-              price: nextPrice,
-              dropPct: drop,
-              cvi: Math.round(syntheticCvi * 100) / 100,
-              tickVelocity: vel,
-              oiPlungePct: currentOiPlunge
-            };
-          }
-
-          // Suggestion 2: TOXIC EXPLOIT / HACK INVARIANT (OI drop > 15% in <60s)
-          if ((updatedPair.oiPlungePct || 0) >= governor.toxicOiThresholdPct && updatedPair.status !== 'TOXIC_ABORT') {
-            updatedPair.status = 'TOXIC_ABORT';
-            updatedPair.isToxicAborted = true;
-            if (webhookConfig.notifyOnExit) {
-              dispatchSignal({
-                type: 'TOXIC_EVENT',
-                symbol: updatedPair.symbol,
-                title: `☣️ [TOXIC OI COLLAPSE ABORT] — ${updatedPair.symbol}`,
-                badgeColor: 'purple',
-                metrics: {
-                  'OI Plunge': `-${updatedPair.oiPlungePct}% in <60s`,
-                  'Hazard Type': 'Suspected Exploit / Delisting / Treasury Drain',
-                  'Action': 'Net Disarmed / Traps Aborted for 1 Hour',
-                  'Risk Armor': 'Capital Protected from Uncontrolled Waterfall'
-                },
-                rawPayload: `☣️ [TOXIC OI COLLAPSE ABORT] — ${updatedPair.symbol}\n• OI Plunge: -${updatedPair.oiPlungePct}%\n• Reason: Suspected exploit or fundamental run\n• Status: Traps disarmed.`
-              });
-            }
-          }
-
-          // Autonomous Trap Arming (If CVI >= 3.0, Deceleration Gate Valid, Drop >= 0.8%, Not Toxic)
-          if (
-            governor.autoExecute && 
-            updatedPair.status === 'IDLE' && 
-            !updatedPair.isToxicAborted &&
-            updatedPair.cvi >= governor.minCviThreshold &&
-            updatedPair.dropPct >= governor.baseDropPct &&
-            updatedPair.tickVelocity <= governor.decelerationCap &&
-            activeFilledCount < governor.maxActiveSlots
-          ) {
-            const floor = updatedPair.price * 0.997;
-            updatedPair.status = 'ARMED';
-            updatedPair.armedPrice = floor;
-            updatedPair.targetTp = floor * 1.005;
-            updatedPair.accumulatedFillUsd = 0;
-
-            if (webhookConfig.notifyOnArmed) {
-              dispatchSignal({
-                type: 'ARMED',
-                symbol: updatedPair.symbol,
-                title: `🎯 [TRAP ARMED] — ${updatedPair.symbol}`,
-                badgeColor: 'amber',
-                metrics: {
-                  'Vacuum Metric': `CVI ${updatedPair.cvi.toFixed(2)}x`,
-                  'Displacement': `${(updatedPair.dropPct * 100).toFixed(2)}% Drop`,
-                  '145% Floor': `$${floor.toFixed(4)}`,
-                  'Target Snapback': `$${(floor * 1.005).toFixed(4)} (+0.50%)`,
-                  'Queue Hurdle': `$${governor.usdQueueHurdle.toLocaleString()} USD Required`
-                },
-                rawPayload: `🎯 [TRAP ARMED] — ${updatedPair.symbol}\n• Floor: $${floor.toFixed(4)}\n• TP: $${(floor * 1.005).toFixed(4)}\n• CVI: ${updatedPair.cvi.toFixed(2)}x`
-              });
-            }
-          }
-
-          // Autonomous Queue Absorption & Air-Pocket Detonation (Armed -> Filled)
-          if (updatedPair.status === 'ARMED' && governor.autoExecute && operationalMode === 'PAPER') {
-            // Taker sell orders hit the book: accumulate $25k-$45k per second towards the $150,000 USD hurdle
-            const incomingTakerVol = 28000 + Math.floor(Math.random() * 22000);
-            const nextQueueTotal = (updatedPair.accumulatedFillUsd || 0) + incomingTakerVol;
-            updatedPair.accumulatedFillUsd = nextQueueTotal;
-
-            if (nextQueueTotal >= governor.usdQueueHurdle) {
-              if (activeFilledCount < governor.maxActiveSlots) {
-                const allocatedSlot = activeFilledCount + 1;
-                activeFilledCount++;
-                const floorPrice = updatedPair.armedPrice || updatedPair.price;
-                const tpTarget = floorPrice * 1.005;
-                
-                updatedPair.status = 'FILLED';
-                updatedPair.fillTime = now;
-                updatedPair.activeSlot = allocatedSlot;
-                updatedPair.holdSeconds = 0;
-                updatedPair.armedPrice = floorPrice;
-                updatedPair.targetTp = tpTarget;
-                updatedPair.price = floorPrice; // Post-only fill executes at the floor
-
-                dispatchSignal({
-                  type: 'FILLED',
-                  symbol: updatedPair.symbol,
-                  title: `🚨 [AUTONOMOUS CASCADE FILLED] — ${updatedPair.symbol}`,
-                  badgeColor: 'emerald',
-                  metrics: {
-                    'Queue Clearance': `$${governor.usdQueueHurdle.toLocaleString()} USD Absorbed (~4.5s)`,
-                    'Vacuum Metric': `CVI ${(updatedPair.cvi || 3.8).toFixed(2)}x`,
-                    'Execution Entry': `$${floorPrice.toFixed(4)} (Post-Only Filled)`,
-                    'Target TP': `$${tpTarget.toFixed(4)} (+0.50% Snapback)`,
-                    'Chronometer': '90s Mechanical Countdown',
-                    'Active Risk Slot': `Slot #${allocatedSlot} of ${governor.maxActiveSlots} ($${governor.marginPerSlotUsd} Margin)`
-                  },
-                  rawPayload: `🚨 [AUTONOMOUS CASCADE FILLED] — ${updatedPair.symbol}\n• Queue: $150,000 USD Hurdle Penetrated\n• Slot: #${allocatedSlot} ($${governor.marginPerSlotUsd} Margin @ 10x)\n• Entry: $${floorPrice.toFixed(4)}\n• TP: $${tpTarget.toFixed(4)}`
-                });
-              } else {
-                // Queue full, cannot allocate another slot (concurrency governor block)
-                updatedPair.status = 'IDLE';
-                updatedPair.accumulatedFillUsd = 0;
-              }
-            }
-          }
-
-          // Active Slot Management & Natural Mean Reversion Pathing
-          if (updatedPair.status === 'FILLED' && updatedPair.fillTime) {
-            const elapsed = Math.floor((now - updatedPair.fillTime) / 1000);
-            updatedPair.holdSeconds = elapsed;
-            
-            // Simulating organic orderbook recovery bounce towards +0.50% TP
-            const entryPrice = updatedPair.armedPrice || updatedPair.price;
-            const targetTp = updatedPair.targetTp || entryPrice * 1.005;
-            
-            // Progressive snapback price trajectory: reaches TP in ~15-30s organically
-            const bounceProgress = Math.min(1.05, (elapsed / 22) + ((Math.random() - 0.45) * 0.1));
-            const simulatedCurrentPrice = entryPrice + (targetTp - entryPrice) * bounceProgress;
-            updatedPair.price = simulatedCurrentPrice;
-
-            const pnlPct = ((updatedPair.price - entryPrice) / entryPrice) * 100;
-            updatedPair.pnlPct = Math.round(pnlPct * 1000) / 1000;
-            updatedPair.pnlUsd = Math.round(((pnlPct / 100) * governor.marginPerSlotUsd * 10) * 100) / 100;
-
-            // Exit Condition A: Take Profit Hit (+0.50% snapback)
-            if (updatedPair.price >= targetTp || bounceProgress >= 1.0) {
-              handleFleetTradeClose(updatedPair, targetTp, 'TP_HIT (Mean Reversion)');
-              updatedPair.status = 'COOLDOWN';
-              setTimeout(() => {
-                setFleet(f => f.map(p => p.symbol === updatedPair.symbol ? { ...p, status: 'IDLE', accumulatedFillUsd: 0, armedPrice: undefined, targetTp: undefined, activeSlot: undefined } : p));
-              }, 6000);
-            }
-            // Exit Condition B: 90s Chronometer Expiry
-            else if (elapsed >= 90) {
-              handleFleetTradeClose(updatedPair, updatedPair.price, 'TIME_STOP_EXPIRED (Floor Broken)');
-              updatedPair.status = 'COOLDOWN';
-              setTimeout(() => {
-                setFleet(f => f.map(p => p.symbol === updatedPair.symbol ? { ...p, status: 'IDLE', accumulatedFillUsd: 0, armedPrice: undefined, targetTp: undefined, activeSlot: undefined } : p));
-              }, 6000);
-            }
-          }
-
-          return updatedPair;
-        });
-      });
-    }, 1000);
-
-    return () => clearInterval(fleetInterval);
-  }, [isScanningActive, isHalted, selectedPair, governor, operationalMode, webhookConfig.notifyOnArmed, dispatchSignal]);
-
-  // Set of actively closing trade symbols to prevent race conditions or double logging
-  const closingTradesRef = useRef<Set<string>>(new Set());
-
-  // Log completed trade to server and dispatch exit alert
-  const handleFleetTradeClose = async (pair: FleetPairTelemetry, exitPrice: number, outcome: string) => {
-    if (closingTradesRef.current.has(pair.symbol)) {
-      return; // Already closing / closed
-    }
-    closingTradesRef.current.add(pair.symbol);
-    setTimeout(() => closingTradesRef.current.delete(pair.symbol), 3000);
-
-    const entryPrice = pair.armedPrice || pair.price;
-    const hold = pair.holdSeconds || 22;
-    const pnlPct = ((exitPrice - entryPrice) / entryPrice) * 100;
-    const notionalUsd = governor.marginPerSlotUsd * 10;
-    const grossPnlUsd = (pnlPct / 100) * notionalUsd;
-    
-    // Fee Drag & Slippage: 0.07% round-trip (0.02% maker post-only entry + 0.05% taker market exit)
-    const feeUsd = (governor.feeDragPct / 100) * notionalUsd;
-    const netPnlUsd = grossPnlUsd - feeUsd;
-    const netPnlPct = pnlPct - governor.feeDragPct;
-
-    const record: ShadowTradeLogRecord = {
-      id: `fleet-${pair.symbol}-${Date.now()}`,
-      timestamp: new Date().toISOString(),
-      symbol: pair.symbol,
-      entryPrice: Math.round(entryPrice * 10000) / 10000,
-      exitPrice: Math.round(exitPrice * 10000) / 10000,
-      cviAtEntry: pair.cvi || 3.85,
-      queueClearanceSeconds: 8.4,
-      holdSeconds: hold,
-      outcome: outcome as any,
-      pnlPct: Math.round(pnlPct * 1000) / 1000,
-      pnlUsd: Math.round(grossPnlUsd * 100) / 100,
-      feeUsd: Math.round(feeUsd * 100) / 100,
-      netPnlUsd: Math.round(netPnlUsd * 100) / 100,
-      netPnlPct: Math.round(netPnlPct * 1000) / 1000,
-    };
-
-    setTradeLogs(prev => [record, ...prev]);
-
-    // Dispatch Exit Signal Card
-    if (webhookConfig.notifyOnExit) {
-      const isTp = outcome.startsWith('TP_HIT');
-      const isToxic = outcome.includes('TOXIC');
-      dispatchSignal({
-        type: isToxic ? 'TOXIC_EVENT' : (isTp ? 'EXIT_TP' : 'EXIT_TIME_STOP'),
-        symbol: pair.symbol,
-        title: isToxic 
-          ? `☣️ [TOXIC OI PLUNGE ABORT] — ${pair.symbol}` 
-          : (isTp ? `✅ [MEAN REVERSION COMPLETE] — ${pair.symbol}` : `⚠️ [TIME-STOP CUT] — ${pair.symbol}`),
-        badgeColor: isToxic ? 'purple' : (isTp ? 'cyan' : (netPnlPct >= 0 ? 'amber' : 'rose')),
-        metrics: {
-          'Outcome': outcome,
-          'Hold Duration': `${hold}s / 90s Max`,
-          'Gross PnL': `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}% ($${grossPnlUsd.toFixed(2)})`,
-          'Fee Drag (0.07%)': `-$${feeUsd.toFixed(2)}`,
-          'Net Realized PnL': `${netPnlPct >= 0 ? '+' : ''}${netPnlPct.toFixed(2)}% (${netPnlUsd >= 0 ? '+' : ''}$${netPnlUsd.toFixed(2)})`,
-          'Capital Slot': `Slot #${pair.activeSlot || 1} Released to STANDBY`
-        },
-        rawPayload: `${isToxic ? '☣️ [TOXIC ABORT]' : (isTp ? '✅ [MEAN REVERSION]' : '⚠️ [TIME-STOP CUT]')} — ${pair.symbol}\n• Net PnL: ${netPnlPct >= 0 ? '+' : ''}${netPnlPct.toFixed(2)}% ($${netPnlUsd.toFixed(2)})\n• Fee Drag: -$${feeUsd.toFixed(2)}\n• Hold: ${hold}s`
-      });
-    }
-
-    try {
-      await fetch('/api/shadow-trades', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(record),
-      });
-    } catch {
-      // ignore
-    }
-  };
-
   // ================= EMERGENCY KILL-SWITCH =================
-  const handleEmergencyHalt = () => {
-    setIsHalted(true);
-    setIsScanningActive(false);
-
-    // Cancel all resting nets and close all occupied slots to flat cash
-    setFleet(prev => prev.map(p => ({
-      ...p,
-      status: 'IDLE',
-      armedPrice: undefined,
-      targetTp: undefined,
-      accumulatedFillUsd: 0,
-      activeSlot: undefined,
-      holdSeconds: 0,
-    })));
-
-    dispatchSignal({
-      type: 'EXIT_TIME_STOP',
-      symbol: 'FLEET',
-      title: '🛑 [EMERGENCY KILL-SWITCH EXECUTED]',
-      badgeColor: 'rose',
-      metrics: {
-        'Action': 'HALT FLEET / CANCEL ALL ACTIVE NETS',
-        'State': 'ALL SLOTS FLATTENED TO CASH (<500ms)',
-        'Active Nets Dropped': `${armedTraps.length} Resting Orders Cancelled`,
-        'Open Positions Closed': `${occupiedSlots.length} Slots Flattened`,
-        'Status': 'ENGINE IN SAFE MODE'
-      },
-      rawPayload: `🛑 [EMERGENCY KILL-SWITCH EXECUTED]\n• All resting nets dropped\n• All active positions flattened to cash\n• System standing down in safe mode.`
-    });
-
-    setToastMessage('EMERGENCY KILL-SWITCH: All 30 assets flattened to cash. Fleet scanner halted.');
-    setTimeout(() => setToastMessage(null), 4500);
+  const handleEmergencyHalt = async () => {
+    try {
+      const response = await fetch('/api/execution/halt', { method: 'POST' });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error);
+      setIsHalted(result.config.halted);
+      setToastMessage(result.message);
+    } catch (e) { setToastMessage(e instanceof Error ? e.message : 'Halt request failed'); }
   };
-
-  const handleResumeFleet = () => {
-    setIsHalted(false);
-    setIsScanningActive(true);
-    setToastMessage('Fleet Engine Resumed: Scanning Top 30 USD-M Futures...');
-    setTimeout(() => setToastMessage(null), 3000);
-  };
+  const handleResumeFleet = () => setToastMessage('Use Resume entries in the backend execution controls.');
 
   // Test Ping to Webhook
   const handleSendTestPing = async () => {
@@ -822,117 +498,68 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
   };
 
   // ================= SIMULATION CONTROLS FOR MANUAL AUDIT =================
-  const triggerSimulatedFleetCascade = (targetSymbol: string) => {
-    setFleet(prev => prev.map(p => {
-      if (p.symbol !== targetSymbol) return p;
-      const dropPrice = p.price * 0.991;
-      const floor = dropPrice * 0.998;
-      return {
-        ...p,
-        price: dropPrice,
-        dropPct: 0.009,
-        cvi: 4.25,
-        cushionPct: 148,
-        tickVelocity: 28,
-        status: 'ARMED',
-        armedPrice: floor,
-        targetTp: floor * 1.005,
-        accumulatedFillUsd: 0,
-      };
-    }));
-
-    dispatchSignal({
-      type: 'ARMED',
-      symbol: targetSymbol,
-      title: `🎯 [DISLOCATION DETECTED] — ${targetSymbol}`,
-      badgeColor: 'amber',
-      metrics: {
-        'Drop Magnitude': '0.90% Air Pocket Dislocation',
-        'CVI Reading': '4.25x (Severe Order Book Void)',
-        'Target Floor': '145% Cumulative Cushion',
-        'Queue Hurdle': '$150,000 USD Real Taker Sales'
-      },
-      rawPayload: `🎯 [DISLOCATION DETECTED] — ${targetSymbol}\n• Drop: 0.90%\n• CVI: 4.25x\n• Floor: 145% Cushion`
-    });
-
-    setToastMessage(`Dislocation injected: ${targetSymbol} net armed at 145% floor`);
-    setTimeout(() => setToastMessage(null), 3000);
+  const armShadow = async (symbol: string) => {
+    try {
+      const response = await fetch('/api/shadow/arm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error);
+      setToastMessage(`Shadow order armed for ${symbol}. Waiting for mainnet selling volume.`);
+    } catch (e) { setToastMessage(e instanceof Error ? e.message : 'Shadow entry failed'); }
   };
+  const triggerSimulatedFleetCascade = (symbol: string) => { void armShadow(symbol); };
 
   // In TESTNET mode, "TEST CASCADE" fires a real signed order on the backend
   // instead of arming the client-side paper simulation.
+  const testnetSubmissionPending = useRef(false);
+  const [isTestnetSubmitting, setIsTestnetSubmitting] = useState(false);
+
+  const submitDemoOrder = async (targetSymbol: string) => {
+    if (testnetSubmissionPending.current) return;
+    if (isHalted) {
+      setToastMessage('Execution is halted. Resume before submitting a demo order.');
+      return;
+    }
+    testnetSubmissionPending.current = true;
+    setIsTestnetSubmitting(true);
+    setToastMessage(`Submitting Binance demo limit order for ${targetSymbol}...`);
+    try {
+      const result = await submitTestnetOrder(targetSymbol);
+      setToastMessage(`Binance accepted ${targetSymbol} order #${result.orderId}. Waiting for a fill.`);
+      try {
+        const response = await fetch('/api/testnet/status');
+        if (!response.ok) throw new Error('Status unavailable');
+        const status = await response.json();
+        setTestnetStatus(status);
+        if (!status.connected) throw new Error('Disconnected');
+      } catch {
+        setToastMessage(`Binance accepted order #${result.orderId}; slot refresh failed. Do not resubmit; check Binance open orders.`);
+      }
+    } catch (error) {
+      setToastMessage(error instanceof Error ? error.message : 'Demo order submission failed.');
+    } finally {
+      testnetSubmissionPending.current = false;
+      setIsTestnetSubmitting(false);
+    }
+  };
+
   const handleTestCascadeClick = (targetSymbol: string) => {
-    if (isShowingRealTestnet) {
-      setToastMessage(`Dispatching real testnet order for ${targetSymbol}...`);
-      fetch(`/api/testnet/force-test-order?symbol=${targetSymbol}`, { method: 'POST' })
-        .then(res => res.json())
-        .then(data => {
-          setToastMessage(data.ok ? `Real order dispatched: ${targetSymbol} #${data.orderId}` : `Rejected: ${data.reason || data.error}`);
-          setTimeout(() => setToastMessage(null), 4000);
-        })
-        .catch(() => {
-          setToastMessage('Failed to reach backend testnet endpoint.');
-          setTimeout(() => setToastMessage(null), 4000);
-        });
+    if (operationalMode === 'LIVE') {
+      void submitDemoOrder(targetSymbol);
       return;
     }
     triggerSimulatedFleetCascade(targetSymbol);
   };
 
-  const satisfyQueueHurdle = (targetSymbol: string) => {
-    if (operationalMode !== 'PAPER' || isHalted) return;
-    setFleet(prev => {
-      const activeCount = prev.filter(p => p.status === 'FILLED').length;
-      if (activeCount >= governor.maxActiveSlots) {
-        setToastMessage(`CONCURRENCY BLOCKED: All ${governor.maxActiveSlots} active slots full. Prioritizing highest CVI.`);
-        setTimeout(() => setToastMessage(null), 3500);
-        return prev;
-      }
-
-      return prev.map(p => {
-        if (p.symbol !== targetSymbol) return p;
-        const entry = p.armedPrice || p.price;
-        const tp = p.targetTp || entry * 1.005;
-
-        dispatchSignal({
-          type: 'FILLED',
-          symbol: targetSymbol,
-          title: `🚨 [AIR POCKET DETONATION] — ${targetSymbol}`,
-          badgeColor: 'emerald',
-          metrics: {
-            'Cascade Volume': '$150,000 USD Absorbed (1.8s)',
-            'Vacuum Metric': `CVI ${(p.cvi || 3.8).toFixed(2)}x`,
-            'Net Entry': `$${entry.toFixed(4)} (Post-Only Filled)`,
-            'Target TP': `$${tp.toFixed(4)} (+0.50% Snapback)`,
-            'Chronometer': '90s Mechanical Countdown',
-            'Execution Slot': `Slot #${activeCount + 1} (${operationalMode} Mode)`
-          },
-          rawPayload: `🚨 [AIR POCKET DETONATION] — ${targetSymbol}\n• Queue: $150,000 Penetrated (1.8s)\n• Entry: $${entry.toFixed(4)}\n• TP: $${tp.toFixed(4)}`
-        });
-
-        return {
-          ...p,
-          status: 'FILLED',
-          fillTime: Date.now(),
-          accumulatedFillUsd: governor.usdQueueHurdle,
-          activeSlot: activeCount + 1,
-          holdSeconds: 0,
-        };
-      });
-    });
-    setToastMessage(`$150,000 USD Queue Penetrated: ${targetSymbol} filled in Slot`);
-    setTimeout(() => setToastMessage(null), 3000);
+  const handlePunchQueue = (targetSymbol: string) => {
+    if (operationalMode === 'LIVE') {
+      void submitDemoOrder(targetSymbol);
+      return;
+    }
+    void armShadow(targetSymbol);
   };
 
-  const executeCleanSnapback = (targetSymbol: string) => {
-    const p = fleet.find(x => x.symbol === targetSymbol);
-    if (!p || p.status !== 'FILLED') return;
-    const tp = p.targetTp || p.price * 1.005;
-    handleFleetTradeClose(p, tp, 'TP_HIT (Mean Reversion)');
-    setFleet(prev => prev.map(x => x.symbol === targetSymbol ? { ...x, status: 'IDLE' } : x));
-    setToastMessage(`Snapback captured: ${targetSymbol} +0.50% profit recorded`);
-    setTimeout(() => setToastMessage(null), 3000);
-  };
+  const satisfyQueueHurdle = (_symbol: string) => setToastMessage('Shadow fills require observed mainnet trades. Queue volume cannot be injected.');
+  const executeCleanSnapback = (_symbol: string) => setToastMessage('Synthetic profit generation is disabled. Exits require market evidence.');
 
   // ================= FLEET TELEMETRY SCORECARD =================
   const fleetScorecard = useMemo(() => {
@@ -1209,80 +836,13 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
                       ? 'bg-rose-950 text-rose-300 border-rose-600 animate-pulse'
                       : 'bg-zinc-900 text-zinc-300 border-zinc-700'
                   }`}>
-                    {isHalted ? 'FLEET HALTED (FLAT CASH)' : 'FLEET ACTIVE'}
+                    {isHalted ? 'ENTRIES HALTED' : 'FLEET ACTIVE'}
                   </span>
                 </div>
               </div>
             </div>
 
-            {/* 3-WAY OPERATIONAL MODE SELECTOR */}
-            <div className="flex items-center bg-zinc-900 p-0.5 rounded-lg border border-zinc-800 font-mono text-xs">
-              <button
-                onClick={() => {
-                  setOperationalMode('SIGNAL_ONLY');
-                  setToastMessage('Operational Mode set to: SIGNAL RADAR ONLY (0 order placement)');
-                  setTimeout(() => setToastMessage(null), 3000);
-                }}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded-md transition-all font-bold ${
-                  operationalMode === 'SIGNAL_ONLY'
-                    ? 'bg-indigo-950 text-indigo-300 border border-indigo-600/70 shadow-sm'
-                    : 'text-zinc-500 hover:text-zinc-300'
-                }`}
-                title="Monitors 30 pairs and dispatches alerts via Webhooks; zero order placement"
-              >
-                <Radio className="w-3 h-3 text-indigo-400" />
-                <span>SIGNAL RADAR ONLY</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  setOperationalMode('PAPER');
-                  setToastMessage('Operational Mode set to: SHADOW TRADER (PAPER FIFO)');
-                  setTimeout(() => setToastMessage(null), 3000);
-                }}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded-md transition-all font-bold ${
-                  operationalMode === 'PAPER'
-                    ? 'bg-emerald-950 text-emerald-300 border border-emerald-600/70 shadow-sm'
-                    : 'text-zinc-500 hover:text-zinc-300'
-                }`}
-                title="Simulates real FIFO fills with live WebSockets and dispatches alerts (Default)"
-              >
-                <ShieldAlert className="w-3 h-3 text-emerald-400" />
-                <span>SHADOW TRADER (PAPER)</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  if (!testnetStatus?.connected) {
-                    setToastMessage('Testnet executor not connected — check BINANCE_KEY/BINANCE_SECRET on the server.');
-                    setTimeout(() => setToastMessage(null), 4000);
-                    return;
-                  }
-                  setOperationalMode(prev => (prev === 'LIVE' ? 'PAPER' : 'LIVE'));
-                  setToastMessage(operationalMode === 'LIVE'
-                    ? 'Switched back to PAPER — slots now show the simulation again.'
-                    : 'Switched to TESTNET view — slots and TEST CASCADE now reflect the real backend executor. The autonomous cascade handler was already running regardless of this toggle.');
-                  setTimeout(() => setToastMessage(null), 4000);
-                }}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded-md transition-all font-bold ${
-                  operationalMode === 'LIVE'
-                    ? 'bg-emerald-950 text-emerald-300 border border-emerald-600/70 shadow-sm animate-pulse'
-                    : testnetStatus?.connected
-                      ? 'text-emerald-500 hover:text-emerald-300'
-                      : 'bg-rose-950 text-rose-300 border border-rose-600/70'
-                }`}
-                title={testnetStatus?.connected ? 'Switch the slot/pair display to real Binance Futures Testnet state' : 'Backend testnet executor is not connected'}
-              >
-                <Zap className={`w-3 h-3 ${testnetStatus?.connected ? 'text-emerald-400' : 'text-rose-400'}`} />
-                <span>
-                  {!testnetStatus?.connected
-                    ? 'TESTNET EXECUTION: OFFLINE'
-                    : operationalMode === 'LIVE'
-                      ? 'TESTNET EXECUTION: VIEWING'
-                      : 'TESTNET EXECUTION: LIVE (BACKGROUND)'}
-                </span>
-              </button>
-            </div>
+            <p className="text-xs text-zinc-400">Backend mode: {operationalMode === 'LIVE' ? 'Binance demo' : operationalMode === 'PAPER' ? 'Real-tape shadow' : 'Signals only'}. Change execution settings below.</p>
           </div>
 
           {/* Real Binance Testnet account strip — actual exchange data, polled every 5s */}
@@ -1301,11 +861,11 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
                 </span>
                 <span className="text-zinc-700">|</span>
                 <span className="text-[11px] font-mono text-zinc-300">
-                  Real open positions: <span className="text-white font-bold">{testnetStatus.positions.length}</span>
+                  Exchange orders / positions: <span className="text-white font-bold">{testnetStatus.positions.length}</span>
                 </span>
                 {testnetStatus.positions.map(p => (
                   <span key={p.entryOrderId} className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-900 border border-zinc-700 text-zinc-300">
-                    {p.symbol} {p.side} #{p.entryOrderId} {p.filled ? '(filled, TP pending)' : '(open, awaiting fill)'}
+                    {p.symbol} {p.side} #{p.entryOrderId} {p.filled ? '(position open)' : '(order awaiting fill)'}
                   </span>
                 ))}
               </>
@@ -1332,7 +892,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
               <button
                 onClick={handleEmergencyHalt}
                 className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500 font-mono text-xs font-black transition-all shadow-lg shadow-rose-950/50"
-                title="Immediately cancels all resting nets and flattens active slots to cash (<500ms)"
+                title="Halt backend entries and request closure of managed exchange exposure"
               >
                 <Octagon className="w-3.5 h-3.5 text-rose-400 animate-pulse" />
                 <span>HALT FLEET / CANCEL ALL</span>
@@ -1380,7 +940,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
             }`}
           >
             <Layers className="w-3.5 h-3.5" />
-            <span>LIVE 30-PAIR FLEET MATRIX</span>
+            <span>REFERENCE UNIVERSE / SELECTED-PAIR TAPE</span>
           </button>
 
           <button
@@ -1416,7 +976,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
             }`}
           >
             <Database className="w-3.5 h-3.5" />
-            <span>FLEET TRADE LEDGER (CSV)</span>
+            <span>LEGACY SIMULATION LEDGER (CSV)</span>
           </button>
 
           <button
@@ -1433,7 +993,8 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
         </div>
       </div>
 
-      {/* Unified Fleet Analytics Scorecard */}
+      <p className="text-sm text-amber-300">Legacy simulation archive below: synthetic outcomes, not Binance performance. New real-tape results appear in the execution panel.</p>
+      {/* Legacy simulation analytics */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         {/* Total Trades */}
         <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 font-mono">
@@ -1461,7 +1022,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
         {/* Net Realized PnL (Net of 0.07% Fees) */}
         <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 font-mono">
           <div className="text-[10px] text-zinc-500 uppercase font-bold flex items-center justify-between">
-            <span>NET REALIZED PNL</span>
+            <span>LEGACY SIMULATION PNL</span>
             <span className="text-[9px] text-zinc-500">-0.07% FEES</span>
           </div>
           <div className={`text-xl font-black mt-0.5 ${fleetScorecard.netUsd >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
@@ -1479,7 +1040,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
           <div className="text-sm font-black text-cyan-300 mt-1 truncate" title={fleetScorecard.mostProfitablePair}>
             {fleetScorecard.mostProfitablePair}
           </div>
-          <div className="text-[10px] text-zinc-400 mt-1">Highest net return</div>
+          <div className="text-[10px] text-zinc-400 mt-1">Legacy synthetic ledger; not exchange performance</div>
         </div>
 
         {/* Active Concurrency Slots & Capital Tier */}
@@ -1487,223 +1048,31 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
           <div className="text-[10px] text-zinc-500 uppercase font-bold flex items-center justify-between">
             <span>ACTIVE SLOTS</span>
             <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-zinc-900 border border-zinc-700 text-purple-300">
-              {governor.microCapitalTier === 'MINI_MICRO_10' 
-                ? '$10 POOL' 
-                : governor.microCapitalTier === 'MICRO_FLIGHT_250' 
-                  ? '$250 POOL' 
-                  : '$250k POOL'}
+              {`$${governor.totalRiskPoolUsd.toLocaleString()} POOL`}
             </span>
           </div>
           <div className="text-xl font-black text-purple-300 mt-0.5">
-            {displaySlots.length} / {governor.maxActiveSlots}
+            {testnetStatus?.connected ? displaySlots.length : 'Unknown'} / {governor.maxActiveSlots}
           </div>
           <div className="text-[10px] text-zinc-400 mt-1">
-            {isShowingRealTestnet ? 'Real testnet positions' : `$${(governor.marginPerSlotUsd * displaySlots.length).toLocaleString()} deployed`}
+            Binance orders and positions
           </div>
         </div>
       </div>
 
-      {/* ================= TAB 1: LIVE 30-PAIR FLEET MATRIX ================= */}
+          <UnifiedExecutionPanel onConfig={config => {
+            setOperationalMode(config.mode);
+            setIsHalted(config.halted);
+            setIsScanningActive(!config.halted);
+            setGovernor(previous => ({ ...previous, maxActiveSlots: config.maxActiveSlots, totalRiskPoolUsd: config.totalRiskPoolUsd,
+              marginPerSlotUsd: config.marginPerSlotUsd, microCapitalTier: config.microCapitalTier, autoExecute: config.autoExecute,
+              absorptionBuffer: config.absorptionBuffer, usdQueueHurdle: config.usdQueueHurdle }));
+          }} />
+
+      {/* ================= TAB 1: REFERENCE UNIVERSE / SELECTED-PAIR TAPE ================= */}
       {activeTab === 'FLEET_MATRIX' && (
         <div className="space-y-4">
-          {/* Concurrency Governor & Priority Slot Bar */}
-          <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4 font-mono text-xs">
-            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3 pb-3 border-b border-zinc-800">
-              <div className="flex items-center gap-2">
-                <Sliders className="w-4 h-4 text-emerald-400" />
-                <span className="font-bold text-white uppercase text-sm">
-                  CONCURRENCY GOVERNOR &amp; DYNAMIC RISK SLOTS
-                </span>
-                <span className="text-[10px] px-2 py-0.5 rounded bg-zinc-900 border border-zinc-700 text-zinc-300">
-                  Pool: ${governor.totalRiskPoolUsd.toLocaleString()} USD
-                </span>
-                <span className={`text-[10px] px-2 py-0.5 rounded font-bold border ${
-                  isShowingRealTestnet
-                    ? 'bg-emerald-950 text-emerald-300 border-emerald-600/60'
-                    : 'bg-zinc-900 text-zinc-500 border-zinc-700'
-                }`}>
-                  {isShowingRealTestnet ? '● SHOWING REAL TESTNET POSITIONS' : 'SHOWING PAPER SIMULATION'}
-                </span>
-              </div>
 
-              {/* Slot Allocator Settings & Micro Flight Toggle */}
-              <div className="flex flex-wrap items-center gap-3">
-                {/* Capital Tier Selector with $10 Mini-Micro Preset */}
-                <div className="flex items-center gap-1.5">
-                  <span className="text-zinc-500 text-[11px]">CAPITAL TIER:</span>
-                  <div className="flex items-center bg-zinc-900 rounded border border-zinc-800 p-0.5">
-                    <button
-                      onClick={() => {
-                        setGovernor(g => ({
-                          ...g,
-                          microCapitalTier: 'INSTITUTIONAL_250K',
-                          totalRiskPoolUsd: 250000,
-                          marginPerSlotUsd: 25000,
-                          maxActiveSlots: 3,
-                          usdQueueHurdle: 150000,
-                        }));
-                        setToastMessage('Governor Calibrated: $250k Institutional Tier (3 Slots @ $25k)');
-                        setTimeout(() => setToastMessage(null), 3000);
-                      }}
-                      className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all ${
-                        governor.microCapitalTier === 'INSTITUTIONAL_250K'
-                          ? 'bg-zinc-800 text-emerald-300 border border-emerald-500/40'
-                          : 'text-zinc-500 hover:text-zinc-300'
-                      }`}
-                      title="Institutional Tier: $250,000 pool, $25,000 margin/slot (10x)"
-                    >
-                      $250k INSTITUTIONAL
-                    </button>
-                    <button
-                      onClick={() => {
-                        setGovernor(g => ({
-                          ...g,
-                          microCapitalTier: 'MICRO_FLIGHT_250',
-                          totalRiskPoolUsd: 250,
-                          marginPerSlotUsd: 25,
-                          maxActiveSlots: 3,
-                          usdQueueHurdle: 150000,
-                        }));
-                        setToastMessage('Governor Calibrated: $250 Micro-Flight Tier (3 Slots @ $25)');
-                        setTimeout(() => setToastMessage(null), 3000);
-                      }}
-                      className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all ${
-                        governor.microCapitalTier === 'MICRO_FLIGHT_250'
-                          ? 'bg-amber-950 text-amber-300 border border-amber-500/50 shadow-sm'
-                          : 'text-zinc-500 hover:text-zinc-300'
-                      }`}
-                      title="Micro-Flight Tier: $250 real pool, $25 margin/slot (5 micro live test trades)"
-                    >
-                      🧪 $250 FLIGHT
-                    </button>
-                    <button
-                      onClick={() => {
-                        setGovernor(g => ({
-                          ...g,
-                          microCapitalTier: 'MINI_MICRO_10',
-                          totalRiskPoolUsd: 10,
-                          marginPerSlotUsd: 5,
-                          maxActiveSlots: 2,
-                          usdQueueHurdle: 150000,
-                        }));
-                        setRadarFilter('10_APPROVED');
-                        if (selectedPair === 'BTCUSDT' || selectedPair === 'AAVEUSDT') {
-                          setSelectedPair('SOLUSDT');
-                        }
-                        setToastMessage('🎯 $10 MINI-MICRO TIER ACTIVE: 2 Slots @ $5 Margin (10x = $50 Size), Filtered to Granular Altcoins (SOL, DOGE, XRP, SUI, ETH, PEPE, AVAX)');
-                        setTimeout(() => setToastMessage(null), 4000);
-                      }}
-                      className={`px-2.5 py-0.5 rounded text-[11px] font-black transition-all ${
-                        governor.microCapitalTier === 'MINI_MICRO_10'
-                          ? 'bg-cyan-950 text-cyan-300 border border-cyan-400 shadow-md animate-pulse'
-                          : 'text-cyan-600 hover:text-cyan-400'
-                      }`}
-                      title="$10 Mini-Micro Testing Tier: $10 pool, 2 slots @ $5 margin (10x = $50 position), micro-fee -$0.035, high-granularity altcoins"
-                    >
-                      🧪 $10 MINI-MICRO TIER
-                    </button>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-1.5">
-                  <span className="text-zinc-500 text-[11px]">MAX SLOTS:</span>
-                  <div className="flex items-center bg-zinc-900 rounded border border-zinc-800 p-0.5">
-                    {[1, 2, 3, 4, 5].map((slotCount) => (
-                      <button
-                        key={slotCount}
-                        onClick={() => setGovernor(g => ({ ...g, maxActiveSlots: slotCount }))}
-                        className={`px-2 py-0.5 rounded text-[11px] font-bold ${
-                          governor.maxActiveSlots === slotCount
-                            ? 'bg-zinc-800 text-emerald-300 border border-emerald-500/40'
-                            : 'text-zinc-500 hover:text-zinc-300'
-                        }`}
-                      >
-                        {slotCount}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-1.5">
-                  <span className="text-zinc-500 text-[11px]">QUEUE HURDLE:</span>
-                  <span className="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 font-bold text-emerald-300">
-                    ${(governor.usdQueueHurdle / 1000).toFixed(0)}k USD
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Visual Slots Display */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
-              {Array.from({ length: governor.maxActiveSlots }).map((_, slotIdx) => {
-                const occupied: any = displaySlots[slotIdx];
-                return (
-                  <div
-                    key={slotIdx}
-                    className={`p-3 rounded-lg border transition-all ${
-                      occupied
-                        ? 'bg-emerald-950/20 border-emerald-500/60 shadow-lg'
-                        : 'bg-zinc-900/40 border-zinc-800/80 border-dashed'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="font-bold text-zinc-400">SLOT #{slotIdx + 1}</span>
-                      <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
-                        occupied ? 'bg-emerald-950 text-emerald-300 border border-emerald-700/60' : 'text-zinc-600'
-                      }`}>
-                        {occupied
-                          ? occupied.isReal
-                            ? occupied.filled ? 'LIVE POSITION' : 'LIVE ORDER (NEW)'
-                            : 'OCCUPIED'
-                          : 'STANDBY'}
-                      </span>
-                    </div>
-
-                    {occupied ? (
-                      <div className="mt-2 space-y-1">
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm font-black text-white">{occupied.symbol}</span>
-                          <span className={`text-xs font-bold ${
-                            (occupied.pnlUsd || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                          }`}>
-                            {(occupied.pnlUsd || 0) >= 0 ? '+' : ''}${(occupied.pnlUsd || 0).toFixed(2)} ({(occupied.pnlPct || 0).toFixed(2)}%)
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between text-[10px] text-zinc-400">
-                          <span>Hold: {occupied.holdSeconds}s / 90s</span>
-                          <span>Floor: ${occupied.armedPrice?.toFixed(4)}</span>
-                        </div>
-                        <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden mt-1">
-                          <div
-                            className="bg-emerald-500 h-full transition-all duration-300"
-                            style={{ width: `${Math.min(100, ((occupied.holdSeconds || 0) / 90) * 100)}%` }}
-                          />
-                        </div>
-                        <div className="flex items-center justify-end gap-1.5 pt-1">
-                          {occupied.isReal ? (
-                            <span className="text-[9px] text-zinc-500">
-                              Order #{occupied.entryOrderId} · backend chronometer manages exit
-                            </span>
-                          ) : (
-                            <button
-                              onClick={() => executeCleanSnapback(occupied.symbol)}
-                              className="px-2 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/50 text-[10px] font-bold"
-                            >
-                              FORCE SNAPBACK (+0.5%)
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="mt-3 text-center text-zinc-600 text-[11px] py-1">
-                        Available • Margin: ${(governor.marginPerSlotUsd).toLocaleString()}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
 
           {/* Top 30 Live Radar Matrix Table */}
           <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4 shadow-xl font-mono text-xs space-y-3">
@@ -1711,7 +1080,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
               <div className="flex flex-wrap items-center gap-2">
                 <Layers className="w-4 h-4 text-emerald-400" />
                 <span className="font-bold text-white uppercase text-sm">
-                  LIVE 30-PAIR FLEET MATRIX
+                  REFERENCE UNIVERSE / SELECTED-PAIR TAPE
                 </span>
                 <span className="text-[10px] px-2 py-0.5 rounded bg-zinc-900 border border-zinc-700 text-zinc-300 font-bold">
                   {filteredRadarFleet.length} Monitored Pairs
@@ -1885,10 +1254,11 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
                           <div className="flex items-center justify-end gap-1.5">
                             {isArmed && (
                               <button
-                                onClick={() => satisfyQueueHurdle(pair.symbol)}
+                                onClick={() => handlePunchQueue(pair.symbol)}
+                                disabled={isTestnetSubmitting || isHalted}
                                 className="px-2 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/50 text-[10px] font-bold font-mono"
                               >
-                                PUNCH $150k QUEUE
+                                {isShowingRealTestnet ? (isTestnetSubmitting ? 'SUBMITTING...' : 'PLACE DEMO LIMIT') : 'ARM REAL-TAPE SHADOW'}
                               </button>
                             )}
 
@@ -2180,7 +1550,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
               <div className="p-3 bg-zinc-900/60 rounded-lg border border-zinc-800/80 space-y-1.5 text-[11px]">
                 <div className="text-zinc-300 font-bold">ANTI-DELUSION EXECUTION PROTOCOL:</div>
                 <div className="text-zinc-400 leading-relaxed">
-                  Touching the price line does NOT grant a fill. The engine requires exactly $150,000 of real market-taker selling volume to execute through your limit order before marking the position active.
+                  Binance demo positions require exchange-confirmed fills. Real-tape shadow entries require observed seller-initiated volume at or below the limit to clear the configured queue estimate plus the order size. Follow their state in the execution panel.
                 </div>
               </div>
 
@@ -2190,19 +1560,20 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
                   onClick={() => triggerSimulatedFleetCascade(selectedPair)}
                   className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-zinc-700 font-bold"
                 >
-                  1. INJECT 0.85% DROP
+                  1. ARM REAL-TAPE SHADOW
                 </button>
                 <button
-                  onClick={() => satisfyQueueHurdle(selectedPair)}
+                  onClick={() => handlePunchQueue(selectedPair)}
+                  disabled={isTestnetSubmitting || isHalted}
                   className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/50 font-bold"
                 >
-                  2. PUNCH $150k QUEUE
+                  {isShowingRealTestnet ? (isTestnetSubmitting ? 'SUBMITTING...' : '2. PLACE DEMO LIMIT') : '2. ARM REAL-TAPE SHADOW'}
                 </button>
                 <button
                   onClick={() => executeCleanSnapback(selectedPair)}
                   className="px-3 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/50 font-bold"
                 >
-                  3. FAST SNAPBACK (+0.5%)
+                  3. EXITS FOLLOW MARKET DATA
                 </button>
               </div>
             </div>
@@ -2275,7 +1646,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
                   <th className="py-2.5 px-3">QUEUE CLEARANCE</th>
                   <th className="py-2.5 px-3">HOLD (S)</th>
                   <th className="py-2.5 px-3">STATUS MARKER</th>
-                  <th className="py-2.5 px-3 text-right">NET REALIZED PNL (AFTER 0.07% FEES)</th>
+                  <th className="py-2.5 px-3 text-right">LEGACY SIMULATION PNL (AFTER 0.07% FEES)</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-900 text-xs">
