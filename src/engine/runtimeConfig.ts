@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 export interface RuntimeConfig {
@@ -80,22 +81,30 @@ export class ConfigStore {
 }
 
 // One writer per state directory. Crash leftovers are reclaimed only when the PID is gone.
+// The lock records `pid@hostname`: a different hostname (new container on the
+// same volume) means the writer cannot be alive, and PIDs inside a container's
+// namespace cannot be compared across restarts.
 export function acquireStateLock(directory: string) {
   fs.mkdirSync(directory, { recursive: true });
   const file = path.join(directory, 'writer.lock');
-  const create = () => { const fd = fs.openSync(file, 'wx', 0o600); fs.writeFileSync(fd, String(process.pid)); fs.closeSync(fd); };
+  const owner = () => `${process.pid}@${os.hostname()}`;
+  const create = () => { const fd = fs.openSync(file, 'wx', 0o600); fs.writeFileSync(fd, owner()); fs.closeSync(fd); };
   try { create(); }
   catch (error: any) {
     if (error.code !== 'EEXIST') throw error;
-    const pid = Number(fs.readFileSync(file, 'utf8'));
+    const [pidText, hostname] = fs.readFileSync(file, 'utf8').split('@');
+    const pid = Number(pidText);
     if (!Number.isInteger(pid) || pid <= 0) throw new Error('Invalid execution state lock; inspect before restarting');
-    let alive = true;
-    try { process.kill(pid, 0); } catch (e: any) { if (e.code === 'ESRCH') alive = false; else throw e; }
-    if (alive) throw new Error('Another process owns this execution state directory');
-    fs.unlinkSync(file); create();
+    if (hostname && hostname !== os.hostname()) { fs.unlinkSync(file); create(); }
+    else {
+      let alive = true;
+      try { process.kill(pid, 0); } catch (e: any) { if (e.code === 'ESRCH') alive = false; else throw e; }
+      if (alive) throw new Error('Another process owns this execution state directory');
+      fs.unlinkSync(file); create();
+    }
   }
   const release = () => {
-    try { if (fs.readFileSync(file, 'utf8') === String(process.pid)) fs.unlinkSync(file); } catch { /* Already released. */ }
+    try { if (fs.readFileSync(file, 'utf8') === owner()) fs.unlinkSync(file); } catch { /* Already released. */ }
   };
   process.once('exit', release);
   return release;
