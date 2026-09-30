@@ -60,6 +60,11 @@ export function UnifiedExecutionPanel({ onConfig }: { onConfig: (config: Runtime
     finally { setBusy(false); }
   };
   const update = (patch: Partial<RuntimeConfig>) => config && mutate('/api/config', { patch, revision: config.revision });
+  // The backend requires slots x margin <= risk pool, so more slots than the pool covers grows the pool.
+  const slotPatch = (n: number): Partial<RuntimeConfig> => {
+    const needed = (config?.marginPerSlotUsd ?? 0) * n;
+    return config && needed > config.totalRiskPoolUsd ? { maxActiveSlots: n, totalRiskPoolUsd: needed, microCapitalTier: 'CUSTOM' } : { maxActiveSlots: n };
+  };
 
   const orders: any[] = shadow?.orders ?? [];
   const mirrors: any[] = demo?.records ?? [];
@@ -147,7 +152,7 @@ export function UnifiedExecutionPanel({ onConfig }: { onConfig: (config: Runtime
       <div className="flex items-center gap-1.5">
         <span className="text-zinc-500 text-[11px]">MAX SLOTS:</span>
         <div className="flex items-center bg-zinc-900 rounded border border-zinc-800 p-0.5">
-          {[1, 2, 3, 4, 5].map(n => <button key={n} disabled={busy} onClick={() => void update({ maxActiveSlots: n })} className={chip(config.maxActiveSlots === n)}>{n}</button>)}
+          {[1, 2, 3, 4, 5].map(n => <button key={n} disabled={busy} onClick={() => void update(slotPatch(n))} className={chip(config.maxActiveSlots === n)}>{n}</button>)}
         </div>
       </div>
       <div className="flex items-center gap-1.5">
