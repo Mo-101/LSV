@@ -106,6 +106,7 @@ app.get('/api/health', (_req, res) => {
           mode: 'testnet',
           exchangeOrdersEnabled: true,
           activePositions: testnetExecutor.activePositions.size,
+          entryOffsetPct: Number((VACUUM_OFFSET * 100).toFixed(4)),
         }
       : { implemented: false, mode: 'simulation', exchangeOrdersEnabled: false },
   });
@@ -720,6 +721,14 @@ const MAX_TESTNET_SLOTS = 3;
 const TESTNET_NOTIONAL_USD = 100;
 const CHRONOMETER_MS = 90000;
 
+// Distance of the cascade entry from the liquidation price, as a fraction
+// (0.0035 = 0.35%). Tunable per market regime without a code change.
+const DEFAULT_VACUUM_OFFSET = 0.0035;
+const parsedOffset = parseFloat(process.env.VACUUM_OFFSET_PCT ?? '');
+const VACUUM_OFFSET = Number.isFinite(parsedOffset) && parsedOffset > 0 && parsedOffset < 0.1
+  ? parsedOffset
+  : DEFAULT_VACUUM_OFFSET;
+
 // Best-effort quantity precision by price magnitude — there is no exchangeInfo
 // lot-size lookup here, so orders on symbols with unusual step sizes may be
 // rejected by Binance. A rejection is logged and treated as a no-op.
@@ -911,7 +920,7 @@ function startServerSideFleetScanner(stream: 'all' | 'liquidations' | 'tickers' 
         if (cluster.totalUsd >= 50000 && now - lastSent > 60000) {
           lastAlertTimes[symbol] = now;
           const isLongCascade = side === 'SELL';
-          const calculatedFloor = isLongCascade ? price * 0.992 : price * 1.008;
+          const calculatedFloor = isLongCascade ? price * (1 - VACUUM_OFFSET) : price * (1 + VACUUM_OFFSET);
           const targetTp = isLongCascade ? calculatedFloor * 1.005 : calculatedFloor * 0.995;
 
           console.log(`🚨 [AUTONOMOUS LIQUIDATION DETECTED] ${symbol} — $${(cluster.totalUsd / 1000).toFixed(1)}k liquidated`);
