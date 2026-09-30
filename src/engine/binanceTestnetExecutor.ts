@@ -25,11 +25,24 @@ export interface ActivePosition {
   openedAt: number;
 }
 
+interface SymbolPrecision {
+  pricePrecision: number;
+  quantityPrecision: number;
+  tickSize: number;
+  stepSize: number;
+}
+
+function roundToStep(value: number, step: number, decimals: number): number {
+  if (!Number.isFinite(step) || step <= 0) return Number(value.toFixed(decimals));
+  const rounded = Math.round(value / step) * step;
+  return Number(rounded.toFixed(decimals));
+}
+
 /**
  * Minimal Binance USD-M Futures TESTNET executor.
- * Uses fixed small USD notional per position — no exchangeInfo/lot-size
- * lookup, so orders on symbols with unusual step sizes may be rejected by
- * the exchange (caller should treat a rejection as a no-op, not a crash).
+ * Fixed small USD notional per position; price/quantity are rounded to each
+ * symbol's real tick/step precision (fetched once from exchangeInfo and
+ * cached) so orders aren't rejected for over-precision.
  */
 export class BinanceTestnetExecutor {
   private apiKey: string;
@@ -37,11 +50,36 @@ export class BinanceTestnetExecutor {
   private listenKey: string | null = null;
   private ws: WebSocket | null = null;
   private keepAliveTimer: NodeJS.Timeout | null = null;
+  private precisionCache = new Map<string, SymbolPrecision>();
   public activePositions = new Map<string, ActivePosition>();
 
   constructor(apiKey: string, apiSecret: string) {
     this.apiKey = apiKey;
     this.apiSecret = apiSecret;
+  }
+
+  private async getSymbolPrecision(symbol: string): Promise<SymbolPrecision> {
+    const cached = this.precisionCache.get(symbol);
+    if (cached) return cached;
+    const fallback: SymbolPrecision = { pricePrecision: 2, quantityPrecision: 3, tickSize: 0.01, stepSize: 0.001 };
+    try {
+      const res = await fetch(`${TESTNET_REST_BASE}/fapi/v1/exchangeInfo`, { signal: AbortSignal.timeout(10000) });
+      const json: any = await res.json();
+      for (const s of json.symbols || []) {
+        const priceFilter = (s.filters || []).find((f: any) => f.filterType === 'PRICE_FILTER');
+        const lotFilter = (s.filters || []).find((f: any) => f.filterType === 'LOT_SIZE');
+        const precision: SymbolPrecision = {
+          pricePrecision: s.pricePrecision,
+          quantityPrecision: s.quantityPrecision,
+          tickSize: priceFilter ? parseFloat(priceFilter.tickSize) : Math.pow(10, -s.pricePrecision),
+          stepSize: lotFilter ? parseFloat(lotFilter.stepSize) : Math.pow(10, -s.quantityPrecision),
+        };
+        this.precisionCache.set(s.symbol, precision);
+      }
+      return this.precisionCache.get(symbol) || fallback;
+    } catch {
+      return fallback;
+    }
   }
 
   private sign(params: Record<string, string | number>): string {
@@ -66,12 +104,15 @@ export class BinanceTestnetExecutor {
 
   async placePostOnlyLimit(symbol: string, side: 'BUY' | 'SELL', price: number, quantity: number): Promise<TestnetOrderResult> {
     try {
+      const precision = await this.getSymbolPrecision(symbol);
+      const roundedPrice = roundToStep(price, precision.tickSize, precision.pricePrecision);
+      const roundedQty = roundToStep(quantity, precision.stepSize, precision.quantityPrecision);
       const { httpOk, json } = await this.signedRequest('POST', '/fapi/v1/order', {
         symbol,
         side,
         type: 'LIMIT',
-        quantity: quantity.toString(),
-        price: price.toString(),
+        quantity: roundedQty.toFixed(precision.quantityPrecision),
+        price: roundedPrice.toFixed(precision.pricePrecision),
         timeInForce: 'GTX',
       });
       if (!httpOk || !json.orderId) {
@@ -85,11 +126,13 @@ export class BinanceTestnetExecutor {
 
   async placeMarketOrder(symbol: string, side: 'BUY' | 'SELL', quantity: number): Promise<TestnetOrderResult> {
     try {
+      const precision = await this.getSymbolPrecision(symbol);
+      const roundedQty = roundToStep(quantity, precision.stepSize, precision.quantityPrecision);
       const { httpOk, json } = await this.signedRequest('POST', '/fapi/v1/order', {
         symbol,
         side,
         type: 'MARKET',
-        quantity: quantity.toString(),
+        quantity: roundedQty.toFixed(precision.quantityPrecision),
       });
       if (!httpOk || !json.orderId) {
         return { ok: false, error: json.msg || 'Order rejected', raw: json };
