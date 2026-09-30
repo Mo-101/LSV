@@ -4,9 +4,10 @@ import path from 'node:path';
 
 export interface RuntimeConfig {
   revision: number;
-  mode: 'SIGNAL_ONLY' | 'PAPER' | 'LIVE';
+  mode: 'SIGNAL_ONLY' | 'PAPER';
   halted: boolean;
   autoExecute: boolean;
+  mirrorToDemo: boolean;
   marginPerSlotUsd: number;
   totalRiskPoolUsd: number;
   leverage: number;
@@ -21,7 +22,7 @@ export interface RuntimeConfig {
   takeProfitPct: number;
 }
 export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
-  revision: 0, mode: 'SIGNAL_ONLY', halted: false, autoExecute: false,
+  revision: 0, mode: 'SIGNAL_ONLY', halted: false, autoExecute: false, mirrorToDemo: false,
   marginPerSlotUsd: 5, totalRiskPoolUsd: 10, leverage: 10, maxActiveSlots: 2,
   microCapitalTier: 'MINI_MICRO_10', minLiquidationUsd: 50000,
   absorptionBuffer: 1.45, usdQueueHurdle: 150000,
@@ -44,9 +45,9 @@ export function validateConfig(current: RuntimeConfig, patch: Partial<RuntimeCon
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('Config must be an object');
   for (const key of Object.keys(patch)) if (!(key in DEFAULT_RUNTIME_CONFIG)) throw new Error(`Unsupported execution setting: ${key}`);
   const next = { ...current, ...patch, revision: current.revision + 1 };
-  if (!['SIGNAL_ONLY', 'PAPER', 'LIVE'].includes(next.mode)) throw new Error('Invalid execution mode');
+  if (!['SIGNAL_ONLY', 'PAPER'].includes(next.mode)) throw new Error('Invalid execution mode');
   if (!['INSTITUTIONAL_250K', 'MICRO_FLIGHT_250', 'MINI_MICRO_10', 'CUSTOM'].includes(next.microCapitalTier)) throw new Error('Invalid tier');
-  for (const k of ['halted', 'autoExecute'] as const) if (typeof next[k] !== 'boolean') throw new Error(`Invalid ${k}`);
+  for (const k of ['halted', 'autoExecute', 'mirrorToDemo'] as const) if (typeof next[k] !== 'boolean') throw new Error(`Invalid ${k}`);
   const ranges = {
     marginPerSlotUsd: [1, 25000], totalRiskPoolUsd: [1, 250000], leverage: [1, 20],
     maxActiveSlots: [1, 5], minLiquidationUsd: [1000, 1000000000], absorptionBuffer: [1, 5],
@@ -67,6 +68,8 @@ export class ConfigStore {
     this.value = { ...DEFAULT_RUNTIME_CONFIG };
     if (fs.existsSync(file)) {
       const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+      // The retired LIVE mode falls back to signals only; demo orders now follow the shadow via mirrorToDemo.
+      if (saved.mode === 'LIVE') saved.mode = 'SIGNAL_ONLY';
       this.value = { ...validateConfig(DEFAULT_RUNTIME_CONFIG, saved), revision: saved.revision ?? 0 };
     }
   }

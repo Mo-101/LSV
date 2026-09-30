@@ -179,7 +179,7 @@ export interface ConcurrencyGovernorConfig {
   microCapitalTier: 'INSTITUTIONAL_250K' | 'MICRO_FLIGHT_250' | 'MINI_MICRO_10' | 'CUSTOM';
 }
 
-export type OperationalMode = 'SIGNAL_ONLY' | 'PAPER' | 'LIVE';
+export type OperationalMode = 'SIGNAL_ONLY' | 'PAPER';
 
 export interface WebhookDispatcherConfig {
   enabled: boolean;

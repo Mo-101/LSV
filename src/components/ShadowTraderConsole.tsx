@@ -1,5 +1,4 @@
 import { UnifiedExecutionPanel } from './UnifiedExecutionPanel';
-import { submitTestnetOrder } from '../engine/testnetSubmission';
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { 
   Activity, 
@@ -108,46 +107,23 @@ interface ShadowTraderConsoleProps {
   onBackToBlueprint?: () => void;
 }
 
-interface TestnetPosition {
-  symbol: string;
-  side: 'BUY' | 'SELL';
-  entryOrderId: number;
-  entryPrice: number;
-  quantity: number;
-  targetTp: number;
-  filled: boolean;
-  tpOrderId: number | null;
-  openedAt: number;
-  pnlUsd: number;
-  pnlPct: number;
-  holdSeconds: number;
-}
-
-interface TestnetStatus {
-  connected: boolean;
-  balance: number | null;
-  error?: string | null;
-  positions: TestnetPosition[];
-}
-
 export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
   // 1. Operational Mode: 3-way toggle [SIGNAL_ONLY, PAPER, LIVE]
   const [operationalMode, setOperationalMode] = useState<OperationalMode>('SIGNAL_ONLY');
 
-  // Real Binance Futures Testnet account/position status, polled from the backend.
-  // This is the actual exchange state — distinct from the simulated fleet below.
-  const [testnetStatus, setTestnetStatus] = useState<TestnetStatus | null>(null);
+  // Active real-tape shadow orders, polled from the backend.
+  const [activeShadowOrders, setActiveShadowOrders] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     const poll = async () => {
       try {
-        const res = await fetch('/api/testnet/status');
+        const res = await fetch('/api/shadow/status');
         const data = await res.json();
         if (!res.ok) throw new Error('Status unavailable');
-        if (!cancelled) setTestnetStatus(data);
+        if (!cancelled) setActiveShadowOrders((data.orders || []).filter((o: { state: string }) => o.state === 'ARMED' || o.state === 'FILLED').length);
       } catch {
-        if (!cancelled) setTestnetStatus(previous => ({ connected: false, balance: previous?.balance ?? null, positions: previous?.positions ?? [] }));
+        if (!cancelled) setActiveShadowOrders(null);
       }
     };
     poll();
@@ -228,25 +204,6 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
   const armedTraps = useMemo(() => {
     return fleet.filter(p => p.status === 'ARMED');
   }, [fleet]);
-
-  // When TESTNET mode is selected, the slot panel shows real backend
-  // positions instead of the client-side paper simulation. The paper
-  // simulation (fleet state, WS ticks, etc.) keeps running unaffected either
-  // way — this only changes what the Slot panel reads from.
-  const isShowingRealTestnet = operationalMode === 'LIVE';
-  const realSlots = useMemo(() => {
-    return (testnetStatus?.positions || []).map(p => ({
-      symbol: p.symbol,
-      pnlUsd: p.pnlUsd,
-      pnlPct: p.pnlPct,
-      holdSeconds: p.holdSeconds,
-      armedPrice: p.entryPrice,
-      isReal: true as const,
-      filled: p.filled,
-      entryOrderId: p.entryOrderId,
-    }));
-  }, [testnetStatus]);
-  const displaySlots = realSlots;
 
   // Dispatch signal card generator
   const dispatchSignal = useCallback((card: Omit<DispatchedSignalCard, 'id' | 'timestamp' | 'destinations'>) => {
@@ -508,55 +465,9 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
   };
   const triggerSimulatedFleetCascade = (symbol: string) => { void armShadow(symbol); };
 
-  // In TESTNET mode, "TEST CASCADE" fires a real signed order on the backend
-  // instead of arming the client-side paper simulation.
-  const testnetSubmissionPending = useRef(false);
-  const [isTestnetSubmitting, setIsTestnetSubmitting] = useState(false);
+  const handleTestCascadeClick = (targetSymbol: string) => triggerSimulatedFleetCascade(targetSymbol);
 
-  const submitDemoOrder = async (targetSymbol: string) => {
-    if (testnetSubmissionPending.current) return;
-    if (isHalted) {
-      setToastMessage('Execution is halted. Resume before submitting a demo order.');
-      return;
-    }
-    testnetSubmissionPending.current = true;
-    setIsTestnetSubmitting(true);
-    setToastMessage(`Submitting Binance demo limit order for ${targetSymbol}...`);
-    try {
-      const result = await submitTestnetOrder(targetSymbol);
-      setToastMessage(`Binance accepted ${targetSymbol} order #${result.orderId}. Waiting for a fill.`);
-      try {
-        const response = await fetch('/api/testnet/status');
-        if (!response.ok) throw new Error('Status unavailable');
-        const status = await response.json();
-        setTestnetStatus(status);
-        if (!status.connected) throw new Error('Disconnected');
-      } catch {
-        setToastMessage(`Binance accepted order #${result.orderId}; slot refresh failed. Do not resubmit; check Binance open orders.`);
-      }
-    } catch (error) {
-      setToastMessage(error instanceof Error ? error.message : 'Demo order submission failed.');
-    } finally {
-      testnetSubmissionPending.current = false;
-      setIsTestnetSubmitting(false);
-    }
-  };
-
-  const handleTestCascadeClick = (targetSymbol: string) => {
-    if (operationalMode === 'LIVE') {
-      void submitDemoOrder(targetSymbol);
-      return;
-    }
-    triggerSimulatedFleetCascade(targetSymbol);
-  };
-
-  const handlePunchQueue = (targetSymbol: string) => {
-    if (operationalMode === 'LIVE') {
-      void submitDemoOrder(targetSymbol);
-      return;
-    }
-    void armShadow(targetSymbol);
-  };
+  const handlePunchQueue = (targetSymbol: string) => { void armShadow(targetSymbol); };
 
   const satisfyQueueHurdle = (_symbol: string) => setToastMessage('Shadow fills require observed mainnet trades. Queue volume cannot be injected.');
   const executeCleanSnapback = (_symbol: string) => setToastMessage('Synthetic profit generation is disabled. Exits require market evidence.');
@@ -842,34 +753,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
               </div>
             </div>
 
-            <p className="text-xs text-zinc-400">Backend mode: {operationalMode === 'LIVE' ? 'Binance demo' : operationalMode === 'PAPER' ? 'Real-tape shadow' : 'Signals only'}. Change execution settings below.</p>
-          </div>
-
-          {/* Real Binance Testnet account strip — actual exchange data, polled every 5s */}
-          <div className="w-full flex flex-wrap items-center gap-3 px-3 py-2 bg-black/40 border border-zinc-800 rounded-lg">
-            <div className="flex items-center gap-1.5">
-              <span className={`w-2 h-2 rounded-full ${testnetStatus?.connected ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'}`} />
-              <span className="text-[10px] font-mono font-bold uppercase text-zinc-400">
-                {testnetStatus?.connected ? 'Connected to testnet.binancefuture.com' : testnetStatus ? `Disconnected${testnetStatus.error ? `: ${testnetStatus.error}` : ''}` : 'Checking...'}
-              </span>
-            </div>
-            {testnetStatus?.connected && (
-              <>
-                <span className="text-zinc-700">|</span>
-                <span className="text-[11px] font-mono text-zinc-300">
-                  Balance: <span className="text-emerald-300 font-bold">${testnetStatus.balance?.toLocaleString(undefined, { maximumFractionDigits: 2 }) ?? '—'} USDT</span>
-                </span>
-                <span className="text-zinc-700">|</span>
-                <span className="text-[11px] font-mono text-zinc-300">
-                  Exchange orders / positions: <span className="text-white font-bold">{testnetStatus.positions.length}</span>
-                </span>
-                {testnetStatus.positions.map(p => (
-                  <span key={p.entryOrderId} className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-900 border border-zinc-700 text-zinc-300">
-                    {p.symbol} {p.side} #{p.entryOrderId} {p.filled ? '(position open)' : '(order awaiting fill)'}
-                  </span>
-                ))}
-              </>
-            )}
+            <p className="text-xs text-zinc-400">Backend mode: {operationalMode === 'PAPER' ? 'Real-tape shadow' : 'Signals only'}. Change execution settings below.</p>
           </div>
 
           {/* Right: Operational Controls, Webhook Modal & Emergency Kill Switch */}
@@ -1052,10 +936,10 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
             </span>
           </div>
           <div className="text-xl font-black text-purple-300 mt-0.5">
-            {testnetStatus?.connected ? displaySlots.length : 'Unknown'} / {governor.maxActiveSlots}
+            {activeShadowOrders ?? 'Unknown'} / {governor.maxActiveSlots}
           </div>
           <div className="text-[10px] text-zinc-400 mt-1">
-            Binance orders and positions
+            Armed or filled real-tape shadow orders
           </div>
         </div>
       </div>
@@ -1255,10 +1139,10 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
                             {isArmed && (
                               <button
                                 onClick={() => handlePunchQueue(pair.symbol)}
-                                disabled={isTestnetSubmitting || isHalted}
+                                disabled={isHalted}
                                 className="px-2 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/50 text-[10px] font-bold font-mono"
                               >
-                                {isShowingRealTestnet ? (isTestnetSubmitting ? 'SUBMITTING...' : 'PLACE DEMO LIMIT') : 'ARM REAL-TAPE SHADOW'}
+                                ARM REAL-TAPE SHADOW
                               </button>
                             )}
 
@@ -1275,9 +1159,9 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
                               <button
                                 onClick={() => handleTestCascadeClick(pair.symbol)}
                                 className="px-2 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-700 text-[10px] font-mono"
-                                title={isShowingRealTestnet ? 'Fires a real signed order on Binance Futures Testnet' : 'Simulates a cascade in the paper engine'}
+                                title="Arms a real-tape shadow order"
                               >
-                                {isShowingRealTestnet ? 'FIRE REAL TEST ORDER' : 'TEST CASCADE'}
+                                TEST CASCADE
                               </button>
                             )}
 
@@ -1550,7 +1434,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
               <div className="p-3 bg-zinc-900/60 rounded-lg border border-zinc-800/80 space-y-1.5 text-[11px]">
                 <div className="text-zinc-300 font-bold">ANTI-DELUSION EXECUTION PROTOCOL:</div>
                 <div className="text-zinc-400 leading-relaxed">
-                  Binance demo positions require exchange-confirmed fills. Real-tape shadow entries require observed seller-initiated volume at or below the limit to clear the configured queue estimate plus the order size. Follow their state in the execution panel.
+                  Real-tape shadow entries require observed seller-initiated volume at or below the limit to clear the configured queue estimate plus the order size. Follow their state in the execution panel.
                 </div>
               </div>
 
@@ -1564,10 +1448,10 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
                 </button>
                 <button
                   onClick={() => handlePunchQueue(selectedPair)}
-                  disabled={isTestnetSubmitting || isHalted}
+                  disabled={isHalted}
                   className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/50 font-bold"
                 >
-                  {isShowingRealTestnet ? (isTestnetSubmitting ? 'SUBMITTING...' : '2. PLACE DEMO LIMIT') : '2. ARM REAL-TAPE SHADOW'}
+                  2. ARM REAL-TAPE SHADOW
                 </button>
                 <button
                   onClick={() => executeCleanSnapback(selectedPair)}

@@ -21,4 +21,4 @@ View your app in AI Studio: https://ai.studio/apps/f6b62bdc-ddbb-4a48-a0b2-81acf
 
 ## Execution architecture
 
-See [unified execution and recovery](docs/execution.md) for backend settings, Binance-derived slots, orphan handling, real-tape shadow fills, and deployment limits.
+See [unified execution and recovery](docs/execution.md) for backend settings, real-tape shadow fills, and deployment limits.

@@ -8,15 +8,12 @@ import { GoogleGenAI } from '@google/genai';
 import WebSocket from 'ws';
 import { finiteNumber } from './src/engine/tradeNumbers';
 import { LiquidationWindow } from './src/engine/liquidationWindow';
-import { getTestnetExecutor } from './src/engine/binanceTestnetExecutor';
 import { ConfigStore, acquireStateLock } from './src/engine/runtimeConfig';
-import { ExecutionCoordinator } from './src/engine/executionCoordinator';
-import { ShadowExecution } from './src/engine/shadowExecution';
-import { AutomaticBatches } from './src/engine/automaticBatches';
+import { ShadowExecution, type ShadowOrder } from './src/engine/shadowExecution';
+import { DemoMirror } from './src/engine/demoMirror';
+import { createDemoClient } from './src/engine/binanceDemoClient';
 
 dotenv.config();
-
-const testnetExecutor = getTestnetExecutor();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,41 +23,32 @@ app.use(express.json());
 const stateDir = process.env.LSV_STATE_DIR || path.join(__dirname, '.lsv-state');
 acquireStateLock(stateDir);
 const configStore = new ConfigStore(path.join(stateDir, 'config.json'));
-const coordinator = testnetExecutor ? new ExecutionCoordinator(testnetExecutor, configStore, path.join(stateDir, 'execution.json')) : null;
 const shadowExecution = new ShadowExecution(configStore, path.join(stateDir, 'shadow-tape.json'));
-const automaticBatches = new AutomaticBatches({
-  config: () => configStore.get(),
-  status: () => coordinator?.status() ?? { connected: false, positions: [] },
-  submit: async candidate => {
-    if (!coordinator) throw new Error('Binance demo is not configured');
-    return coordinator.submit(candidate.symbol, candidate.floor, true);
-  },
-});
-app.get('/api/automation/status', (_req, res) => res.json(automaticBatches.status()));
+// Binance demo account follows the shadow engine; it never decides a trade itself.
+const demoClient = createDemoClient();
+const demoMirror = new DemoMirror(demoClient, () => configStore.get(), path.join(stateDir, 'demo-mirror.json'));
+function mirrorShadowEntry(order: ShadowOrder, mainnetBestBid: number) {
+  void demoMirror.onShadowArmed(order, mainnetBestBid).then(record => {
+    if (!record) return;
+    broadcastEvent(record.state === 'FAILED'
+      ? { type: 'DEMO_ENTRY_FAILED', title: `${record.symbol} demo mirror not placed`, detail: record.error ?? 'Rejected', level: 'error' }
+      : { type: 'DEMO_ENTRY', title: `${record.symbol} demo limit placed`, detail: `#${record.entry.orderId ?? 'unconfirmed'} at ${record.entry.price ?? '?'}, ${(record.depthPct * 100).toFixed(3)}% below demo bid`, level: 'info' });
+  });
+}
 app.get('/api/config', (_req, res) => res.json(configStore.get()));
 app.post('/api/config', async (req, res) => {
   try {
-    const update = async () => configStore.update(req.body.patch, req.body.revision);
-    const config = coordinator ? await coordinator.serial(update) : await update();
-    res.json(config);
+    res.json(configStore.update(req.body.patch, req.body.revision));
   } catch (error: any) { res.status(400).json({ error: error.message }); }
 });
 app.get('/api/shadow/status', (_req, res) => res.json(shadowExecution.status()));
-app.post('/api/testnet/reconcile', async (req, res) => {
-  try {
-    if (!coordinator) throw new Error('Testnet not configured');
-    const symbol = String(req.body.symbol || '').toUpperCase();
-    if (!/^[A-Z0-9]{2,20}USDT$/.test(symbol)) throw new Error('Invalid symbol');
-    res.json(await coordinator.adopt(symbol));
-  } catch (error: any) { res.status(400).json({ error: error.message }); }
-});
+app.get('/api/demo/status', (_req, res) => res.json(demoMirror.status()));
 app.post('/api/execution/halt', async (_req, res) => {
   try {
-    const halt = async () => configStore.update({ halted: true }, configStore.get().revision);
-    if (coordinator) await coordinator.serial(halt); else await halt();
-    const status = await coordinator?.reconcile();
+    configStore.update({ halted: true }, configStore.get().revision);
     await shadowExecution.tick();
-    res.json({ config: configStore.get(), status, message: 'Entries halted. Check exchange slots for confirmed closures; unmanaged exposure requires adoption.' });
+    await demoMirror.tick(shadowExecution.orders);
+    res.json({ config: configStore.get(), message: 'Entries halted. Active shadow orders were canceled or closed at the observed bid; their demo mirrors follow.' });
   } catch (error: any) { res.status(500).json({ error: error.message }); }
 });
 
@@ -89,12 +77,6 @@ app.get('/api/events', (req, res) => {
   });
 });
 
-// Real Binance Futures Testnet account/position status — proves the UI is
-// actually wired to the exchange, distinct from the simulated shadow trader.
-app.get('/api/testnet/status', (_req, res) => {
-  res.json(coordinator?.status() ?? { connected: false, stale: true, balance: null, positions: [], error: 'Testnet credentials not configured' });
-});
-
 const feedHealth = {
   liquidations: { connected: false, messages: 0, lastMessageAt: null as string | null },
   tickers: { connected: false, messages: 0, lastMessageAt: null as string | null },
@@ -109,20 +91,14 @@ app.get('/api/health', (_req, res) => {
     credentials: {
       geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
       telegramConfigured: Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID),
-      binanceConfigured: Boolean(process.env.BINANCE_KEY && process.env.BINANCE_SECRET),
       note: 'Configured does not mean authenticated.',
     },
-    execution: testnetExecutor
-      ? {
-          implemented: true,
-          mode: 'testnet',
-          exchangeOrdersEnabled: configStore.get().mode === 'LIVE' && !configStore.get().halted,
-          activePositions: coordinator?.status().positions.length ?? 0,
-          config: configStore.get(),
-          entryRule: `${configStore.get().absorptionBuffer * 100}% bid absorption, TP +${configStore.get().takeProfitPct * 100}%, ${configStore.get().holdSeconds}s hold`,
-          entryTimeoutSeconds: configStore.get().entryTimeoutSeconds,
-        }
-      : { implemented: false, mode: configStore.get().mode, exchangeOrdersEnabled: false },
+    execution: {
+      mode: configStore.get().mode,
+      demoMirror: { configured: Boolean(demoClient), enabled: configStore.get().mirrorToDemo },
+      exchangeOrdersEnabled: Boolean(demoClient) && configStore.get().mode === 'PAPER' && configStore.get().mirrorToDemo && !configStore.get().halted,
+      config: configStore.get(),
+    },
   });
 });
 
@@ -730,7 +706,7 @@ const TOP_SENTINEL_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'DOGEUSDT', 'XRPU
 let lastAlertTimes: Record<string, number> = {};
 const liquidationWindow = new LiquidationWindow();
 
-// ================= BINANCE FUTURES TESTNET EXECUTION (real signed orders, fake money) =================
+// ================= ABSORPTION FLOOR (mainnet public depth) =================
 interface AbsorptionFloor {
   floor: number;
   bestBid: number;
@@ -744,16 +720,10 @@ interface AbsorptionFloor {
 // depth: thin books push the floor deeper, thick books keep it shallow.
 // A 1000-level snapshot is taken at the trigger moment because the 20-level
 // stream often can't hold 145% of a real cascade on altcoins.
-// 'mainnet' reads fapi.binance.com (drives alerts and the real-tape shadow
-// model); 'testnet' reads testnet.binancefuture.com so demo orders are priced
-// against the book they will actually rest on. Testnet books are thin, so if
-// the visible book cannot hold the full cushion the deepest bid is used as
-// the floor rather than dropping the candidate.
-async function computeAbsorptionFloor(symbol: string, cascadeUsd: number, venue: 'mainnet' | 'testnet' = 'mainnet'): Promise<AbsorptionFloor | null> {
+async function computeAbsorptionFloor(symbol: string, cascadeUsd: number): Promise<AbsorptionFloor | null> {
   const targetUsd = cascadeUsd * configStore.get().absorptionBuffer;
-  const base = venue === 'testnet' ? 'https://testnet.binancefuture.com' : 'https://fapi.binance.com';
   try {
-    const res = await fetch(`${base}/fapi/v1/depth?symbol=${symbol}&limit=1000`, {
+    const res = await fetch(`https://fapi.binance.com/fapi/v1/depth?symbol=${symbol}&limit=1000`, {
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return null;
@@ -768,28 +738,12 @@ async function computeAbsorptionFloor(symbol: string, cascadeUsd: number, venue:
         return { floor: price, bestBid: parseFloat(bids[0][0]), levels: i + 1, restingUsd, targetUsd };
       }
     }
-    if (venue === 'testnet') {
-      return { floor: parseFloat(bids[bids.length - 1][0]), bestBid: parseFloat(bids[0][0]), levels: bids.length, restingUsd, targetUsd };
-    }
     return null;
   } catch {
     return null;
   }
 }
 
-app.post('/api/testnet/force-test-order', async (req, res) => {
-  try {
-    if (!testnetExecutor || !coordinator) throw new Error('Testnet not configured');
-    const symbol = String(req.query.symbol || req.body?.symbol || 'SOLUSDT').toUpperCase();
-    if (!/^[A-Z0-9]{2,20}USDT$/.test(symbol)) throw new Error('Invalid symbol');
-    const offsetPct = Number(req.query.offsetPct ?? 0);
-    if (!Number.isFinite(offsetPct) || offsetPct < 0 || offsetPct > 5) throw new Error('Invalid offset');
-    const book = await testnetExecutor.getBookTicker(symbol);
-    if (!book) throw new Error('Demo order book unavailable');
-    const entry = book.bid * (1 - offsetPct / 100);
-    res.json({ ...await coordinator.submit(symbol, entry), symbol, entry, executionVenue: 'BINANCE_TESTNET', fillGuaranteed: false });
-  } catch (error: any) { res.status(400).json({ ok: false, error: error.message }); }
-});
 app.post('/api/shadow/arm', async (req, res) => {
   try {
     const symbol = String(req.body.symbol || '').toUpperCase();
@@ -798,7 +752,9 @@ app.post('/api/shadow/arm', async (req, res) => {
     const book = await response.json();
     if (!response.ok || !book.bids?.length) throw new Error('Mainnet book unavailable');
     const [price, quantity] = book.bids[0].map(Number);
-    res.json({ ok: true, order: shadowExecution.arm(symbol, price, price * quantity) });
+    const order = shadowExecution.arm(symbol, price, price * quantity);
+    mirrorShadowEntry(order, price);
+    res.json({ ok: true, order });
   } catch (error: any) { res.status(400).json({ error: error.message }); }
 });
 
@@ -865,13 +821,7 @@ function startServerSideFleetScanner(stream: 'all' | 'liquidations' | 'tickers' 
             const config = configStore.get();
             if (!config.halted && config.autoExecute && (!config.allowedSymbols.length || config.allowedSymbols.includes(symbol))) {
               try {
-                if (config.mode === 'LIVE' && coordinator) {
-                  // Demo orders rest on the testnet book, so the floor is priced there.
-                  const demoFloor = await computeAbsorptionFloor(symbol, cluster.totalUsd, 'testnet');
-                  if (demoFloor) automaticBatches.offer({ symbol, liquidationUsd: cluster.totalUsd, detectedAt: now, floor: demoFloor.floor });
-                  else console.log(`[ABSORPTION FLOOR] ${symbol} testnet depth unavailable — no demo entry`);
-                }
-                if (config.mode === 'PAPER' && absorption) shadowExecution.arm(symbol, absorption.floor, absorption.restingUsd, true);
+                if (config.mode === 'PAPER' && absorption) mirrorShadowEntry(shadowExecution.arm(symbol, absorption.floor, absorption.restingUsd, true), absorption.bestBid);
               } catch (error: any) {
                 broadcastEvent({ type: 'ENTRY_SKIPPED', title: `${symbol} entry skipped`, detail: error.message, level: 'warning' });
               }
@@ -985,13 +935,12 @@ async function startServer() {
     console.log(`Liquidation Vacuum Engine running at http://0.0.0.0:${PORT}`);
     // Start background scanner after server is up
     if (process.env.LSV_DISABLE_WORKERS !== '1') {
-      void coordinator?.reconcile();
-      let reconciling = false;
+      let ticking = false;
       setInterval(async () => {
-        if (reconciling) return;
-        reconciling = true;
-        try { await coordinator?.reconcile(); await shadowExecution.tick(); await automaticBatches.tick(); }
-        finally { reconciling = false; }
+        if (ticking) return;
+        ticking = true;
+        try { await shadowExecution.tick(); await demoMirror.tick(shadowExecution.orders); }
+        finally { ticking = false; }
       }, 5000);
       setTimeout(startServerSideFleetScanner, 2000);
     }
