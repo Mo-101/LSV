@@ -783,7 +783,10 @@ async function dispatchTestnetEntry(
         level: 'warning',
       });
     } else {
-      await testnetExecutor!.placeMarketOrder(symbol, pos.side === 'BUY' ? 'SELL' : 'BUY', pos.quantity);
+      // Pull the resting TP first, otherwise it stays on the book after the
+      // market close and could later open an unintended opposite position.
+      if (pos.tpOrderId) await testnetExecutor!.cancelOrder(symbol, pos.tpOrderId);
+      await testnetExecutor!.placeMarketOrder(symbol, pos.side === 'BUY' ? 'SELL' : 'BUY', pos.quantity, true);
       console.log(`[CHRONOMETER EXPIRED] ${symbol} emergency market close (TP not hit in 90s)`);
       broadcastEvent({
         type: 'TESTNET_CHRONOMETER_EXPIRED',
@@ -819,19 +822,19 @@ app.post('/api/testnet/force-test-order', async (req, res) => {
     return res.status(400).json({ ok: false, error: 'Testnet executor not configured (BINANCE_KEY/BINANCE_SECRET missing)' });
   }
   const symbol = String(req.query.symbol || req.body?.symbol || 'SOLUSDT').toUpperCase();
+  // Default: rest at the best bid so the test order actually fills in a calm
+  // market and exercises the full fill -> TP -> chronometer lifecycle.
+  // ?offsetPct=0.8 reproduces the real cascade floor (0.8% below) instead.
+  const offsetPct = Number(req.query.offsetPct ?? 0);
   try {
-    const priceRes = await fetch(`https://testnet.binancefuture.com/fapi/v1/ticker/price?symbol=${symbol}`, {
-      signal: AbortSignal.timeout(10000),
-    });
-    const priceJson: any = await priceRes.json();
-    const price = parseFloat(priceJson.price);
-    if (!Number.isFinite(price) || price <= 0) {
-      return res.status(400).json({ ok: false, error: `Could not fetch reference price for ${symbol}`, raw: priceJson });
+    const book = await testnetExecutor.getBookTicker(symbol);
+    if (!book) {
+      return res.status(400).json({ ok: false, error: `Could not fetch order book for ${symbol}` });
     }
-    const calculatedFloor = price * 0.992;
-    const targetTp = calculatedFloor * 1.005;
-    const result = await dispatchTestnetEntry(symbol, 'BUY', calculatedFloor, targetTp);
-    res.json({ ...result, symbol, referencePrice: price, floor: calculatedFloor, targetTp });
+    const entry = offsetPct > 0 ? book.bid * (1 - offsetPct / 100) : book.bid;
+    const targetTp = entry * 1.005;
+    const result = await dispatchTestnetEntry(symbol, 'BUY', entry, targetTp);
+    res.json({ ...result, symbol, bestBid: book.bid, bestAsk: book.ask, entry, targetTp });
   } catch (err: any) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -844,7 +847,7 @@ if (testnetExecutor) {
     if (status === 'FILLED' && orderId === pos.entryOrderId && !pos.filled) {
       pos.filled = true;
       const tpSide = pos.side === 'BUY' ? 'SELL' : 'BUY';
-      testnetExecutor.placePostOnlyLimit(symbol, tpSide, pos.targetTp, pos.quantity).then(tp => {
+      testnetExecutor.placePostOnlyLimit(symbol, tpSide, pos.targetTp, pos.quantity, true).then(tp => {
         if (tp.ok && tp.orderId) pos.tpOrderId = tp.orderId;
         console.log(`[TESTNET ORDER FILLED] ${symbol} entry ${orderId} -> TP order ${tp.orderId ?? 'FAILED: ' + tp.error}`);
         broadcastEvent({

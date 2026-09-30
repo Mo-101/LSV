@@ -102,19 +102,33 @@ export class BinanceTestnetExecutor {
     return { httpOk: res.ok, json };
   }
 
-  async placePostOnlyLimit(symbol: string, side: 'BUY' | 'SELL', price: number, quantity: number): Promise<TestnetOrderResult> {
+  async getBookTicker(symbol: string): Promise<{ bid: number; ask: number } | null> {
+    try {
+      const res = await fetch(`${TESTNET_REST_BASE}/fapi/v1/ticker/bookTicker?symbol=${symbol}`, { signal: AbortSignal.timeout(10000) });
+      const json: any = await res.json();
+      const bid = parseFloat(json.bidPrice);
+      const ask = parseFloat(json.askPrice);
+      return Number.isFinite(bid) && Number.isFinite(ask) ? { bid, ask } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async placePostOnlyLimit(symbol: string, side: 'BUY' | 'SELL', price: number, quantity: number, reduceOnly = false): Promise<TestnetOrderResult> {
     try {
       const precision = await this.getSymbolPrecision(symbol);
       const roundedPrice = roundToStep(price, precision.tickSize, precision.pricePrecision);
       const roundedQty = roundToStep(quantity, precision.stepSize, precision.quantityPrecision);
-      const { httpOk, json } = await this.signedRequest('POST', '/fapi/v1/order', {
+      const params: Record<string, string> = {
         symbol,
         side,
         type: 'LIMIT',
         quantity: roundedQty.toFixed(precision.quantityPrecision),
         price: roundedPrice.toFixed(precision.pricePrecision),
         timeInForce: 'GTX',
-      });
+      };
+      if (reduceOnly) params.reduceOnly = 'true';
+      const { httpOk, json } = await this.signedRequest('POST', '/fapi/v1/order', params);
       if (!httpOk || !json.orderId) {
         return { ok: false, error: json.msg || 'Order rejected', raw: json };
       }
@@ -124,16 +138,18 @@ export class BinanceTestnetExecutor {
     }
   }
 
-  async placeMarketOrder(symbol: string, side: 'BUY' | 'SELL', quantity: number): Promise<TestnetOrderResult> {
+  async placeMarketOrder(symbol: string, side: 'BUY' | 'SELL', quantity: number, reduceOnly = false): Promise<TestnetOrderResult> {
     try {
       const precision = await this.getSymbolPrecision(symbol);
       const roundedQty = roundToStep(quantity, precision.stepSize, precision.quantityPrecision);
-      const { httpOk, json } = await this.signedRequest('POST', '/fapi/v1/order', {
+      const params: Record<string, string> = {
         symbol,
         side,
         type: 'MARKET',
         quantity: roundedQty.toFixed(precision.quantityPrecision),
-      });
+      };
+      if (reduceOnly) params.reduceOnly = 'true';
+      const { httpOk, json } = await this.signedRequest('POST', '/fapi/v1/order', params);
       if (!httpOk || !json.orderId) {
         return { ok: false, error: json.msg || 'Order rejected', raw: json };
       }
