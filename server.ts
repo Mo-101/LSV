@@ -9,9 +9,7 @@ import WebSocket from 'ws';
 import { finiteNumber } from './src/engine/tradeNumbers';
 import { LiquidationWindow } from './src/engine/liquidationWindow';
 import { ConfigStore, acquireStateLock } from './src/engine/runtimeConfig';
-import { ShadowExecution, type ShadowOrder } from './src/engine/shadowExecution';
-import { DemoMirror } from './src/engine/demoMirror';
-import { createDemoClient } from './src/engine/binanceDemoClient';
+import { ShadowExecution } from './src/engine/shadowExecution';
 
 dotenv.config();
 
@@ -24,17 +22,6 @@ const stateDir = process.env.LSV_STATE_DIR || path.join(__dirname, '.lsv-state')
 acquireStateLock(stateDir);
 const configStore = new ConfigStore(path.join(stateDir, 'config.json'));
 const shadowExecution = new ShadowExecution(configStore, path.join(stateDir, 'shadow-tape.json'));
-// Binance demo account follows the shadow engine; it never decides a trade itself.
-const demoClient = createDemoClient();
-const demoMirror = new DemoMirror(demoClient, () => configStore.get(), path.join(stateDir, 'demo-mirror.json'));
-function mirrorShadowEntry(order: ShadowOrder, mainnetBestBid: number) {
-  void demoMirror.onShadowArmed(order, mainnetBestBid).then(record => {
-    if (!record) return;
-    broadcastEvent(record.state === 'FAILED'
-      ? { type: 'DEMO_ENTRY_FAILED', title: `${record.symbol} demo mirror not placed`, detail: record.error ?? 'Rejected', level: 'error' }
-      : { type: 'DEMO_ENTRY', title: `${record.symbol} demo limit placed`, detail: `#${record.entry.orderId ?? 'unconfirmed'} at ${record.entry.price ?? '?'}, ${(record.depthPct * 100).toFixed(3)}% below demo bid`, level: 'info' });
-  });
-}
 app.get('/api/config', (_req, res) => res.json(configStore.get()));
 app.post('/api/config', async (req, res) => {
   try {
@@ -42,13 +29,11 @@ app.post('/api/config', async (req, res) => {
   } catch (error: any) { res.status(400).json({ error: error.message }); }
 });
 app.get('/api/shadow/status', (_req, res) => res.json(shadowExecution.status()));
-app.get('/api/demo/status', (_req, res) => res.json(demoMirror.status()));
 app.post('/api/execution/halt', async (_req, res) => {
   try {
     configStore.update({ halted: true }, configStore.get().revision);
     await shadowExecution.tick();
-    await demoMirror.tick(shadowExecution.orders);
-    res.json({ config: configStore.get(), message: 'Entries halted. Active shadow orders were canceled or closed at the observed bid; their demo mirrors follow.' });
+    res.json({ config: configStore.get(), message: 'Entries halted. Active shadow orders were canceled or closed at the observed bid.' });
   } catch (error: any) { res.status(500).json({ error: error.message }); }
 });
 
@@ -93,12 +78,7 @@ app.get('/api/health', (_req, res) => {
       telegramConfigured: Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID),
       note: 'Configured does not mean authenticated.',
     },
-    execution: {
-      mode: configStore.get().mode,
-      demoMirror: { configured: Boolean(demoClient), enabled: configStore.get().mirrorToDemo },
-      exchangeOrdersEnabled: Boolean(demoClient) && configStore.get().mode === 'PAPER' && configStore.get().mirrorToDemo && !configStore.get().halted,
-      config: configStore.get(),
-    },
+    execution: { mode: configStore.get().mode, exchangeOrdersEnabled: false, config: configStore.get() },
   });
 });
 
@@ -752,9 +732,7 @@ app.post('/api/shadow/arm', async (req, res) => {
     const book = await response.json();
     if (!response.ok || !book.bids?.length) throw new Error('Mainnet book unavailable');
     const [price, quantity] = book.bids[0].map(Number);
-    const order = shadowExecution.arm(symbol, price, price * quantity);
-    mirrorShadowEntry(order, price);
-    res.json({ ok: true, order });
+    res.json({ ok: true, order: shadowExecution.arm(symbol, price, price * quantity) });
   } catch (error: any) { res.status(400).json({ error: error.message }); }
 });
 
@@ -821,7 +799,7 @@ function startServerSideFleetScanner(stream: 'all' | 'liquidations' | 'tickers' 
             const config = configStore.get();
             if (!config.halted && config.autoExecute && (!config.allowedSymbols.length || config.allowedSymbols.includes(symbol))) {
               try {
-                if (config.mode === 'PAPER' && absorption) mirrorShadowEntry(shadowExecution.arm(symbol, absorption.floor, absorption.restingUsd, true), absorption.bestBid);
+                if (config.mode === 'PAPER' && absorption) shadowExecution.arm(symbol, absorption.floor, absorption.restingUsd, true);
               } catch (error: any) {
                 broadcastEvent({ type: 'ENTRY_SKIPPED', title: `${symbol} entry skipped`, detail: error.message, level: 'warning' });
               }
@@ -935,13 +913,7 @@ async function startServer() {
     console.log(`Liquidation Vacuum Engine running at http://0.0.0.0:${PORT}`);
     // Start background scanner after server is up
     if (process.env.LSV_DISABLE_WORKERS !== '1') {
-      let ticking = false;
-      setInterval(async () => {
-        if (ticking) return;
-        ticking = true;
-        try { await shadowExecution.tick(); await demoMirror.tick(shadowExecution.orders); }
-        finally { ticking = false; }
-      }, 5000);
+      setInterval(() => void shadowExecution.tick(), 5000);
       setTimeout(startServerSideFleetScanner, 2000);
     }
   });

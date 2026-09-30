@@ -36,6 +36,17 @@ test('saved config from the removed Binance demo mode loads as signals only', ()
   } finally { f.cleanup(); }
 });
 
+test('saved config with the retired mirrorToDemo setting still loads', () => {
+  const f = fixture();
+  try {
+    fs.writeFileSync(f.file, JSON.stringify({ ...DEFAULT_RUNTIME_CONFIG, mode: 'PAPER', mirrorToDemo: true, revision: 12 }));
+    const config = new ConfigStore(f.file).get() as any;
+    assert.equal(config.mode, 'PAPER');
+    assert.equal(config.revision, 12);
+    assert.equal('mirrorToDemo' in config, false);
+  } finally { f.cleanup(); }
+});
+
 test('shadow fill requires qualifying sell volume, deduplicates tape, and never manufactures a rebound', () => {
   const o: ShadowOrder = { id: '1', symbol: 'SOLUSDT', entryPrice: 100, quantity: 1, targetTp: 100.5, createdAt: 1000,
     entryDeadline: 10000, holdMs: 90000, queueAheadUsd: 100, consumedUsd: 0, exitConsumedQty: 0, state: 'ARMED' };
