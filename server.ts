@@ -20,6 +20,31 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json());
 
+// ================= LIVE EVENT STREAM (SSE) — powers frontend toast notifications =================
+type SentinelEvent = { type: string; title: string; detail: string; level: 'info' | 'success' | 'warning' | 'error'; timestamp: string };
+const sseClients = new Set<import('express').Response>();
+
+function broadcastEvent(event: Omit<SentinelEvent, 'timestamp'>) {
+  const payload: SentinelEvent = { ...event, timestamp: new Date().toISOString() };
+  const line = `data: ${JSON.stringify(payload)}\n\n`;
+  for (const client of sseClients) {
+    client.write(line);
+  }
+}
+
+app.get('/api/events', (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+  res.write(': connected\n\n');
+  sseClients.add(res);
+  req.on('close', () => {
+    sseClients.delete(res);
+  });
+});
+
 const feedHealth = {
   liquidations: { connected: false, messages: 0, lastMessageAt: null as string | null },
   tickers: { connected: false, messages: 0, lastMessageAt: null as string | null },
@@ -678,11 +703,23 @@ if (testnetExecutor) {
       testnetExecutor.placePostOnlyLimit(symbol, tpSide, pos.targetTp, pos.quantity).then(tp => {
         if (tp.ok && tp.orderId) pos.tpOrderId = tp.orderId;
         console.log(`[TESTNET ORDER FILLED] ${symbol} entry ${orderId} -> TP order ${tp.orderId ?? 'FAILED: ' + tp.error}`);
+        broadcastEvent({
+          type: 'TESTNET_ENTRY_FILLED',
+          title: `${symbol} entry filled`,
+          detail: tp.ok ? `Take-profit order placed at $${pos.targetTp.toFixed(4)}` : `TP placement failed: ${tp.error}`,
+          level: tp.ok ? 'success' : 'error',
+        });
       });
     } else if (status === 'FILLED' && orderId === pos.tpOrderId) {
       clearTimeout(pos.chronometer);
       testnetExecutor.activePositions.delete(symbol);
       console.log(`[TESTNET POSITION CLOSED] ${symbol} take-profit filled`);
+      broadcastEvent({
+        type: 'TESTNET_POSITION_CLOSED',
+        title: `${symbol} take-profit hit`,
+        detail: 'Position closed on Binance Futures Testnet.',
+        level: 'success',
+      });
     }
   });
 }
@@ -731,6 +768,12 @@ function startServerSideFleetScanner(stream: 'all' | 'liquidations' | 'tickers' 
           const targetTp = isLongCascade ? calculatedFloor * 1.005 : calculatedFloor * 0.995;
 
           console.log(`🚨 [AUTONOMOUS LIQUIDATION DETECTED] ${symbol} — $${(cluster.totalUsd / 1000).toFixed(1)}k liquidated`);
+          broadcastEvent({
+            type: 'LIQUIDATION_CASCADE',
+            title: `🚨 ${symbol} cascade detected`,
+            detail: `$${(cluster.totalUsd / 1000).toFixed(1)}k liquidated in 30s (${isLongCascade ? 'long squeeze' : 'short squeeze'})`,
+            level: 'warning',
+          });
 
           await sendTelegramAlert(`🚨 [REAL-TIME LIQUIDATION CASCADE] — ${symbol}`, {
             'Cascade Type': isLongCascade ? '🔴 LONG SQUEEZE (Forced Market Sells)' : '🟢 SHORT SQUEEZE (Forced Market Buys)',
@@ -747,21 +790,51 @@ function startServerSideFleetScanner(stream: 'all' | 'liquidations' | 'tickers' 
             const entrySide: 'BUY' | 'SELL' = isLongCascade ? 'BUY' : 'SELL';
             const quantity = estimateTestnetQuantity(TESTNET_NOTIONAL_USD, calculatedFloor);
             console.log(`[TESTNET ORDER DISPATCH] ${symbol} ${entrySide} ${quantity} @ ${calculatedFloor.toFixed(6)} (GTX post-only)`);
+            broadcastEvent({
+              type: 'TESTNET_ORDER_DISPATCH',
+              title: `${symbol} order dispatched`,
+              detail: `${entrySide} ${quantity} @ $${calculatedFloor.toFixed(4)} (GTX post-only, testnet)`,
+              level: 'info',
+            });
             testnetExecutor.placePostOnlyLimit(symbol, entrySide, calculatedFloor, quantity).then(result => {
               if (!result.ok || !result.orderId) {
                 console.warn(`[TESTNET ORDER REJECTED] ${symbol}: ${result.error}`);
+                broadcastEvent({
+                  type: 'TESTNET_ORDER_REJECTED',
+                  title: `${symbol} order rejected`,
+                  detail: result.error || 'Unknown rejection reason',
+                  level: 'error',
+                });
                 return;
               }
               console.log(`[TESTNET ORDER CREATED] ${symbol} orderId=${result.orderId}`);
+              broadcastEvent({
+                type: 'TESTNET_ORDER_CREATED',
+                title: `${symbol} order created`,
+                detail: `Binance testnet Order ID: ${result.orderId} — 90s chronometer armed`,
+                level: 'success',
+              });
               const chronometer = setTimeout(async () => {
                 const pos = testnetExecutor.activePositions.get(symbol);
                 if (!pos) return;
                 if (!pos.filled) {
                   await testnetExecutor.cancelOrder(symbol, pos.entryOrderId);
                   console.log(`[CHRONOMETER EXPIRED] ${symbol} entry order canceled (no fill in 90s)`);
+                  broadcastEvent({
+                    type: 'TESTNET_CHRONOMETER_EXPIRED',
+                    title: `${symbol} entry canceled`,
+                    detail: 'No fill within 90s — order canceled.',
+                    level: 'warning',
+                  });
                 } else {
                   await testnetExecutor.placeMarketOrder(symbol, pos.side === 'BUY' ? 'SELL' : 'BUY', pos.quantity);
                   console.log(`[CHRONOMETER EXPIRED] ${symbol} emergency market close (TP not hit in 90s)`);
+                  broadcastEvent({
+                    type: 'TESTNET_CHRONOMETER_EXPIRED',
+                    title: `${symbol} emergency close`,
+                    detail: 'Take-profit not hit within 90s — position closed at market.',
+                    level: 'warning',
+                  });
                 }
                 testnetExecutor.activePositions.delete(symbol);
               }, CHRONOMETER_MS);

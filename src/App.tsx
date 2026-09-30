@@ -13,6 +13,7 @@ import { KellyRuinCalculator } from './components/KellyRuinCalculator';
 import { GeminiQuantAdvisor } from './components/GeminiQuantAdvisor';
 import { BlueprintModal } from './components/BlueprintModal';
 import { ShadowTraderConsole } from './components/ShadowTraderConsole';
+import { ToastNotifications } from './components/ToastNotifications';
 import {
   createInitialSimulationState,
   generateSyntheticOrderBook,
@@ -568,6 +569,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-black text-zinc-100 flex flex-col font-sans selection:bg-purple-600 selection:text-white">
+      <ToastNotifications />
       {/* Top Header */}
       <Header
         currentPair={currentPair}
