@@ -72,7 +72,7 @@ app.get('/api/testnet/status', async (_req, res) => {
       openedAt: p.openedAt,
       pnlUsd,
       pnlPct,
-      holdSeconds: Math.floor((Date.now() - p.openedAt) / 1000),
+      holdSeconds: Math.floor((Date.now() - (p.fillTime ?? p.openedAt)) / 1000),
     };
   });
   res.json({
@@ -106,7 +106,7 @@ app.get('/api/health', (_req, res) => {
           mode: 'testnet',
           exchangeOrdersEnabled: true,
           activePositions: testnetExecutor.activePositions.size,
-          entryOffsetPct: Number((VACUUM_OFFSET * 100).toFixed(4)),
+          entryRule: `145% bid absorption floor (long cascades only), TP +${SNAPBACK_TP_PCT * 100}%, 90s hold from fill`,
         }
       : { implemented: false, mode: 'simulation', exchangeOrdersEnabled: false },
   });
@@ -721,13 +721,46 @@ const MAX_TESTNET_SLOTS = 3;
 const TESTNET_NOTIONAL_USD = 100;
 const CHRONOMETER_MS = 90000;
 
-// Distance of the cascade entry from the liquidation price, as a fraction
-// (0.0035 = 0.35%). Tunable per market regime without a code change.
-const DEFAULT_VACUUM_OFFSET = 0.0035;
-const parsedOffset = parseFloat(process.env.VACUUM_OFFSET_PCT ?? '');
-const VACUUM_OFFSET = Number.isFinite(parsedOffset) && parsedOffset > 0 && parsedOffset < 0.1
-  ? parsedOffset
-  : DEFAULT_VACUUM_OFFSET;
+// shadow_trader.py parameters
+const ABSORPTION_BUFFER = 1.45; // resting bids must absorb 145% of the cascade
+const SNAPBACK_TP_PCT = 0.005;  // +0.50% take-profit from the entry
+
+interface AbsorptionFloor {
+  floor: number;
+  bestBid: number;
+  levels: number;
+  restingUsd: number;
+  targetUsd: number;
+}
+
+// Walks the live mainnet bid book down from the best bid until cumulative
+// resting USD reaches 145% of the cascade; that price is the entry. The book
+// sets the depth: thin books push the floor deeper, thick books keep it
+// shallow. A 1000-level snapshot is taken at the trigger moment because the
+// 20-level stream often can't hold 145% of a real cascade on altcoins.
+async function computeAbsorptionFloor(symbol: string, cascadeUsd: number): Promise<AbsorptionFloor | null> {
+  const targetUsd = cascadeUsd * ABSORPTION_BUFFER;
+  try {
+    const res = await fetch(`https://fapi.binance.com/fapi/v1/depth?symbol=${symbol}&limit=1000`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    const book: any = await res.json();
+    const bids: Array<[string, string]> = book.bids || [];
+    if (!bids.length) return null;
+    let restingUsd = 0;
+    for (let i = 0; i < bids.length; i++) {
+      const price = parseFloat(bids[i][0]);
+      restingUsd += price * parseFloat(bids[i][1]);
+      if (restingUsd >= targetUsd) {
+        return { floor: price, bestBid: parseFloat(bids[0][0]), levels: i + 1, restingUsd, targetUsd };
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 // Best-effort quantity precision by price magnitude — there is no exchangeInfo
 // lot-size lookup here, so orders on symbols with unusual step sizes may be
@@ -738,6 +771,35 @@ function estimateTestnetQuantity(notionalUsd: number, price: number): number {
   if (price >= 10) return parseFloat(raw.toFixed(2));
   if (price >= 1) return parseFloat(raw.toFixed(1));
   return Math.max(1, Math.round(raw));
+}
+
+// Unfilled at expiry: cancel the entry. Filled: pull the resting TP first
+// (otherwise it survives the market close and could later open an unintended
+// opposite position), then flatten with a reduce-only market order.
+async function expireTestnetPosition(symbol: string) {
+  const pos = testnetExecutor?.activePositions.get(symbol);
+  if (!testnetExecutor || !pos) return;
+  if (!pos.filled) {
+    await testnetExecutor.cancelOrder(symbol, pos.entryOrderId);
+    console.log(`[CHRONOMETER EXPIRED] ${symbol} entry order canceled (no fill in 90s)`);
+    broadcastEvent({
+      type: 'TESTNET_CHRONOMETER_EXPIRED',
+      title: `${symbol} entry canceled`,
+      detail: 'No fill within 90s — order canceled.',
+      level: 'warning',
+    });
+  } else {
+    if (pos.tpOrderId) await testnetExecutor.cancelOrder(symbol, pos.tpOrderId);
+    await testnetExecutor.placeMarketOrder(symbol, pos.side === 'BUY' ? 'SELL' : 'BUY', pos.quantity, true);
+    console.log(`[CHRONOMETER EXPIRED] ${symbol} emergency market close (TP not hit within 90s of fill)`);
+    broadcastEvent({
+      type: 'TESTNET_CHRONOMETER_EXPIRED',
+      title: `${symbol} emergency close`,
+      detail: 'Take-profit not hit within 90s of the fill — position closed at market.',
+      level: 'warning',
+    });
+  }
+  testnetExecutor.activePositions.delete(symbol);
 }
 
 async function dispatchTestnetEntry(
@@ -779,33 +841,7 @@ async function dispatchTestnetEntry(
     level: 'success',
   });
 
-  const chronometer = setTimeout(async () => {
-    const pos = testnetExecutor!.activePositions.get(symbol);
-    if (!pos) return;
-    if (!pos.filled) {
-      await testnetExecutor!.cancelOrder(symbol, pos.entryOrderId);
-      console.log(`[CHRONOMETER EXPIRED] ${symbol} entry order canceled (no fill in 90s)`);
-      broadcastEvent({
-        type: 'TESTNET_CHRONOMETER_EXPIRED',
-        title: `${symbol} entry canceled`,
-        detail: 'No fill within 90s — order canceled.',
-        level: 'warning',
-      });
-    } else {
-      // Pull the resting TP first, otherwise it stays on the book after the
-      // market close and could later open an unintended opposite position.
-      if (pos.tpOrderId) await testnetExecutor!.cancelOrder(symbol, pos.tpOrderId);
-      await testnetExecutor!.placeMarketOrder(symbol, pos.side === 'BUY' ? 'SELL' : 'BUY', pos.quantity, true);
-      console.log(`[CHRONOMETER EXPIRED] ${symbol} emergency market close (TP not hit in 90s)`);
-      broadcastEvent({
-        type: 'TESTNET_CHRONOMETER_EXPIRED',
-        title: `${symbol} emergency close`,
-        detail: 'Take-profit not hit within 90s — position closed at market.',
-        level: 'warning',
-      });
-    }
-    testnetExecutor!.activePositions.delete(symbol);
-  }, CHRONOMETER_MS);
+  const chronometer = setTimeout(() => expireTestnetPosition(symbol), CHRONOMETER_MS);
 
   testnetExecutor.activePositions.set(symbol, {
     symbol,
@@ -855,6 +891,11 @@ if (testnetExecutor) {
     if (!pos) return;
     if (status === 'FILLED' && orderId === pos.entryOrderId && !pos.filled) {
       pos.filled = true;
+      pos.fillTime = Date.now();
+      // shadow_trader.py measures the 90s hold from the fill, not from when
+      // the entry was placed.
+      clearTimeout(pos.chronometer);
+      pos.chronometer = setTimeout(() => expireTestnetPosition(symbol), CHRONOMETER_MS);
       const tpSide = pos.side === 'BUY' ? 'SELL' : 'BUY';
       testnetExecutor.placePostOnlyLimit(symbol, tpSide, pos.targetTp, pos.quantity, true).then(tp => {
         if (tp.ok && tp.orderId) pos.tpOrderId = tp.orderId;
@@ -920,8 +961,7 @@ function startServerSideFleetScanner(stream: 'all' | 'liquidations' | 'tickers' 
         if (cluster.totalUsd >= 50000 && now - lastSent > 60000) {
           lastAlertTimes[symbol] = now;
           const isLongCascade = side === 'SELL';
-          const calculatedFloor = isLongCascade ? price * (1 - VACUUM_OFFSET) : price * (1 + VACUUM_OFFSET);
-          const targetTp = isLongCascade ? calculatedFloor * 1.005 : calculatedFloor * 0.995;
+          const fmt = (n: number) => `$${n >= 10 ? n.toFixed(2) : n.toFixed(4)}`;
 
           console.log(`🚨 [AUTONOMOUS LIQUIDATION DETECTED] ${symbol} — $${(cluster.totalUsd / 1000).toFixed(1)}k liquidated`);
           broadcastEvent({
@@ -931,20 +971,30 @@ function startServerSideFleetScanner(stream: 'all' | 'liquidations' | 'tickers' 
             level: 'warning',
           });
 
+          // Long-only, as in shadow_trader.py: the net catches forced selling.
+          let absorption: AbsorptionFloor | null = null;
+          if (isLongCascade) {
+            absorption = await computeAbsorptionFloor(symbol, cluster.totalUsd);
+            if (absorption) {
+              const depthPct = ((absorption.bestBid - absorption.floor) / absorption.bestBid) * 100;
+              console.log(`[ABSORPTION FLOOR] ${symbol} 145% of $${Math.round(cluster.totalUsd).toLocaleString()} = $${Math.round(absorption.targetUsd).toLocaleString()} reached ${absorption.levels} levels down at ${fmt(absorption.floor)} (${depthPct.toFixed(3)}% below best bid)`);
+              if (testnetExecutor) {
+                await dispatchTestnetEntry(symbol, 'BUY', absorption.floor, absorption.floor * (1 + SNAPBACK_TP_PCT));
+              }
+            } else {
+              console.log(`[ABSORPTION FLOOR] ${symbol} no floor: book cannot absorb 145% of $${Math.round(cluster.totalUsd).toLocaleString()} within 1000 levels (or depth unavailable) — no trade`);
+            }
+          }
+
           await sendTelegramAlert(`🚨 [REAL-TIME LIQUIDATION CASCADE] — ${symbol}`, {
             'Cascade Type': isLongCascade ? '🔴 LONG SQUEEZE (Forced Market Sells)' : '🟢 SHORT SQUEEZE (Forced Market Buys)',
             'Liquidation Size': `$${(cluster.totalUsd).toLocaleString('en-US', { maximumFractionDigits: 0 })} USD (${cluster.count} orders in 30s)`,
-            'Last Forced Price': `$${price >= 10 ? price.toFixed(2) : price.toFixed(4)}`,
-            '145% Bid Floor Net': `$${calculatedFloor >= 10 ? calculatedFloor.toFixed(2) : calculatedFloor.toFixed(4)} (Post-Only Limit)`,
-            'Target Snapback (+0.50%)': `$${targetTp >= 10 ? targetTp.toFixed(2) : targetTp.toFixed(4)}`,
-            'FIFO Queue Hurdle': '$150,000 USD Real Taker Exhaustion',
-            'Time-Stop Invariant': '90-Second Mechanical Countdown',
+            'Last Forced Price': fmt(price),
+            '145% Absorption Floor': absorption ? `${fmt(absorption.floor)} (${absorption.levels} bid levels)` : isLongCascade ? 'Book too thin — no trade' : 'Short squeeze — long-only engine, no trade',
+            'Target Snapback (+0.50%)': absorption ? fmt(absorption.floor * (1 + SNAPBACK_TP_PCT)) : '—',
+            'Time-Stop Invariant': '90 seconds from fill',
             'Source': 'Binance Futures Engine Stream (!forceOrder@arr)'
           });
-
-          if (testnetExecutor) {
-            await dispatchTestnetEntry(symbol, isLongCascade ? 'BUY' : 'SELL', calculatedFloor, targetTp);
-          }
         }
       } catch (err: any) {
         // non-blocking

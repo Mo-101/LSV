@@ -23,6 +23,7 @@ export interface ActivePosition {
   tpOrderId?: number;
   chronometer: NodeJS.Timeout;
   openedAt: number;
+  fillTime?: number;
 }
 
 interface SymbolPrecision {
