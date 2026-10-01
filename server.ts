@@ -42,10 +42,12 @@ app.use('/api/fleet', (req, res, next) => {
   next();
 });
 app.get('/api/fleet', (_req, res) => res.json(fleetEngine.snapshot()));
-app.get('/api/fleet/armed', (_req, res) => {
+app.get(['/api/fleet/armed', '/api/fleet/active'], (_req, res) => {
   const snapshot = fleetEngine.snapshot();
-  res.json({ updatedAt: snapshot.updatedAt, mode: snapshot.mode, halted: snapshot.halted, queueHurdleUsd: snapshot.governor.usdQueueHurdle,
-    armed: snapshot.pairs.filter(p => p.status === 'ARMED') });
+  // Entries are immediate (taker), so there is no resting ARMED state any more;
+  // `active` lists open positions and `armed` stays for older clients.
+  const active = snapshot.pairs.filter(p => p.status === 'FILLED');
+  res.json({ updatedAt: snapshot.updatedAt, mode: snapshot.mode, halted: snapshot.halted, strategy: snapshot.strategy, active, armed: [] });
 });
 app.get('/api/fleet/events', (req, res) => {
   const since = Number(req.query.since) || 0;
