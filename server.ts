@@ -72,8 +72,8 @@ app.get('/api/fleet/stream', (req, res) => {
   const unsubscribe = fleetEngine.subscribe(event => send('signal', event, event.seq));
   req.on('close', () => { clearInterval(timer); unsubscribe(); });
 });
-const fleetControl = (action: (body: any) => unknown) => (req: express.Request, res: express.Response) => {
-  try { res.json({ ok: true, result: action(req.body || {}), fleet: fleetEngine.snapshot() }); }
+const fleetControl = (action: (body: any) => unknown) => async (req: express.Request, res: express.Response) => {
+  try { res.json({ ok: true, result: await action(req.body || {}), fleet: fleetEngine.snapshot() }); }
   catch (error: any) { res.status(400).json({ ok: false, error: error.message }); }
 };
 app.post('/api/fleet/arm', fleetControl(body => fleetEngine.manualArm(String(body.symbol || '').toUpperCase())));

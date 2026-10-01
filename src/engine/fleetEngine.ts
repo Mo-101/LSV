@@ -2,9 +2,14 @@ import WebSocket from 'ws';
 import type { ConcurrencyGovernorConfig, FleetPairTelemetry, ShadowTradeLogRecord } from '../types';
 import { TOP_30_UNIVERSE } from './fleetUniverse';
 
-// Server-side port of the dashboard's 30-pair fleet loop. Same rules and
-// formulas as the browser version; it runs on real Binance ticks without a
-// browser tab. It places no exchange orders and sends no alerts.
+// Server-side port of the dashboard's 30-pair fleet loop, on real Binance
+// ticks without a browser tab. It places no exchange orders and sends no alerts.
+// Rules: arm when CVI >= 3, drop >= 0.8%, velocity <= cap and a slot is free;
+// fill on $150k of real selling at the floor; exit at +0.5% or after 90s.
+// CVI  = real long liquidations in the last 30s / real resting bids between
+//        the current price and that liquidation cluster.
+// Floor = the bid where cumulative real resting bids reach 145% of the cluster.
+// Unfilled nets expire after 300s.
 
 export const DEFAULT_FLEET_GOVERNOR: ConcurrencyGovernorConfig = {
   maxActiveSlots: 3,
@@ -30,12 +35,16 @@ export interface LiveTick {
   quoteVolume24h: number;
 }
 
+export interface Liquidation { time: number; usd: number; price: number; }
+export interface Cluster { usd: number; price: number; count: number; }
+export type DepthFetcher = (symbol: string) => Promise<Array<[number, number]>>;
+
 export type FleetMode = 'SIGNAL_ONLY' | 'PAPER';
 export interface FleetPair extends FleetPairTelemetry { armedAt?: number; cooldownUntil?: number; }
 export interface FleetEvent {
   seq: number;
   time: string;
-  type: 'ARMED' | 'FILLED' | 'EXIT_TP' | 'EXIT_TIME_STOP' | 'SLOT_BLOCKED' | 'TOXIC_ABORT' | 'HALT' | 'RESUME';
+  type: 'ARMED' | 'FILLED' | 'EXIT_TP' | 'EXIT_TIME_STOP' | 'SLOT_BLOCKED' | 'ARMED_EXPIRED' | 'NO_FLOOR' | 'TOXIC_ABORT' | 'HALT' | 'RESUME';
   symbol: string;
   data: Record<string, number | string | undefined>;
 }
@@ -43,6 +52,37 @@ export interface FleetEvent {
 interface Options {
   now?: () => number;
   onTrade?: (record: ShadowTradeLogRecord) => void;
+  fetchDepth?: DepthFetcher;
+}
+
+const CLUSTER_WINDOW_MS = 30000;
+const ENTRY_TIMEOUT_MS = 300000;
+const FLOOR_RETRY_MS = 10000;
+
+// 1000-level mainnet bid book, taken when the 20-level stream cannot hold the cushion.
+const fetchMainnetDepth: DepthFetcher = async symbol => {
+  const res = await fetch(`https://fapi.binance.com/fapi/v1/depth?symbol=${symbol}&limit=1000`, { signal: AbortSignal.timeout(5000) });
+  if (!res.ok) throw new Error(`Depth unavailable (HTTP ${res.status})`);
+  const book: any = await res.json();
+  return (book.bids || []).map((b: [string, string]) => [Number(b[0]), Number(b[1])] as [number, number]);
+};
+
+// Walks bids down from the best bid until cumulative resting USD reaches targetUsd.
+export function absorptionFloor(bids: Array<[number, number]>, targetUsd: number) {
+  let restingUsd = 0;
+  for (let i = 0; i < bids.length; i++) {
+    restingUsd += bids[i][0] * bids[i][1];
+    if (restingUsd >= targetUsd) return { floor: bids[i][0], levels: i + 1, restingUsd };
+  }
+  return null;
+}
+
+// Resting bid USD between the current price and the cluster price. When the
+// price is already at or below the cluster, only the best bid level stands in the way.
+export function restingBidsAbove(bids: Array<[number, number]>, clusterPrice: number) {
+  const inSpan = bids.filter(([price]) => price >= clusterPrice);
+  const levels = inSpan.length ? inSpan : bids.slice(0, 1);
+  return levels.reduce((sum, [price, size]) => sum + price * size, 0);
 }
 
 const COOLDOWN_MS = 6000;
@@ -55,18 +95,22 @@ export class FleetEngine {
   mode: FleetMode = 'PAPER';
   halted = false;
   events: FleetEvent[] = [];
-  feed = { connected: false, messages: 0, lastMessageAt: null as string | null };
+  feed = { connected: false, messages: 0, lastMessageAt: null as string | null, liquidations: 0, fleetLiquidations: 0, lastLiquidation: null as string | null };
   private ticks = new Map<string, LiveTick>();
   private armedPrices = new Map<string, number>();
+  private liquidations = new Map<string, Liquidation[]>();
+  private floorRequests = new Map<string, number>();
   private seq = 0;
   private listeners = new Set<(event: FleetEvent) => void>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private sockets = new Set<WebSocket>();
   private openSockets = new Set<WebSocket>();
   private now: () => number;
+  private fetchDepth: DepthFetcher;
 
   constructor(private options: Options = {}) {
     this.now = options.now ?? Date.now;
+    this.fetchDepth = options.fetchDepth ?? fetchMainnetDepth;
     this.pairs = TOP_30_UNIVERSE.map(p => ({
       symbol: p.symbol, name: p.name, price: 0, refPrice: 0, dropPct: 0, cvi: 0, cushionPct: 0,
       tickVelocity: 0, volume24hUsd: 0, openInterestStability: p.oiStability, status: 'IDLE',
@@ -101,6 +145,22 @@ export class FleetEngine {
   }
   ingestTicker(symbol: string, quoteVolume: number) {
     if (quoteVolume > 0) this.tick(symbol).quoteVolume24h = quoteVolume;
+  }
+  // Forced orders from the liquidation stream. SELL = a long was liquidated;
+  // the engine is long-only, so only those form the cluster.
+  ingestLiquidation(symbol: string, side: string, price: number, quantity: number) {
+    if (side !== 'SELL' || !(price > 0 && quantity > 0)) return;
+    const list = this.liquidations.get(symbol) ?? [];
+    list.push({ time: this.now(), usd: price * quantity, price });
+    this.liquidations.set(symbol, list);
+  }
+  cluster(symbol: string, now = this.now()): Cluster {
+    const list = (this.liquidations.get(symbol) ?? []).filter(l => now - l.time < CLUSTER_WINDOW_MS);
+    this.liquidations.set(symbol, list);
+    const usd = list.reduce((sum, l) => sum + l.usd, 0);
+    // Volume-weighted price of the liquidations in the window.
+    const price = usd > 0 ? list.reduce((sum, l) => sum + l.price * l.usd, 0) / usd : 0;
+    return { usd, price, count: list.length };
   }
 
   // ---------- events ----------
@@ -138,7 +198,9 @@ export class FleetEngine {
         const ref = updatedPair.refPrice > 0 ? updatedPair.refPrice : live.mid;
         const drop = Math.max(0, (ref - live.mid) / ref);
         const topBidUsd = live.bids.slice(0, 10).reduce((sum, b) => sum + (b[0] * b[1]), 0);
-        const cviScore = Math.min(6.5, Math.max(1.1, (drop * 2800000) / Math.max(10000, topBidUsd)));
+        const cluster = this.cluster(pair.symbol, now);
+        const resting = cluster.usd > 0 ? restingBidsAbove(live.bids, cluster.price) : 0;
+        const cviScore = cluster.usd > 0 && resting > 0 ? cluster.usd / resting : 0;
         updatedPair = {
           ...updatedPair,
           price: live.mid,
@@ -166,7 +228,7 @@ export class FleetEngine {
         updatedPair.tickVelocity <= g.decelerationCap &&
         activeFilledCount < g.maxActiveSlots
       ) {
-        this.arm(updatedPair, now);
+        this.armAtAbsorptionFloor(updatedPair, now);
       }
 
       if (updatedPair.status === 'ARMED' && updatedPair.armedPrice) {
@@ -206,6 +268,16 @@ export class FleetEngine {
         }
       }
 
+      // Unfilled nets expire.
+      if (updatedPair.status === 'ARMED' && updatedPair.armedAt && now - updatedPair.armedAt >= ENTRY_TIMEOUT_MS) {
+        this.emit('ARMED_EXPIRED', updatedPair.symbol, { floor: updatedPair.armedPrice, queueUsd: Math.round(updatedPair.accumulatedFillUsd || 0), armedSeconds: Math.round((now - updatedPair.armedAt) / 1000) });
+        updatedPair.status = 'IDLE';
+        updatedPair.accumulatedFillUsd = 0;
+        updatedPair.armedPrice = undefined;
+        updatedPair.targetTp = undefined;
+        updatedPair.armedAt = undefined;
+      }
+
       // Active slot: real price, TP or 90s time stop
       if (updatedPair.status === 'FILLED' && updatedPair.fillTime) {
         const elapsed = Math.floor((now - updatedPair.fillTime) / 1000);
@@ -235,15 +307,49 @@ export class FleetEngine {
     });
   }
 
-  private arm(pair: FleetPair, now: number) {
-    const floor = pair.price * 0.997;
+  // Floor = bid where real resting bids reach 145% of the 30s liquidation cluster.
+  // The 20-level stream is tried first; a 1000-level snapshot is fetched when it
+  // cannot hold the cushion. No floor within 1000 levels means no trade.
+  private armAtAbsorptionFloor(pair: FleetPair, now: number): 'ARMED' | 'PENDING' | 'NO_CLUSTER' {
+    const cluster = this.cluster(pair.symbol, now);
+    if (!(cluster.usd > 0)) return 'NO_CLUSTER';
+    const targetUsd = cluster.usd * this.governor.absorptionBuffer;
+    const live = this.ticks.get(pair.symbol);
+    const fromStream = live ? absorptionFloor(live.bids, targetUsd) : null;
+    if (fromStream) {
+      this.arm(pair, now, fromStream.floor, cluster, targetUsd, fromStream.levels);
+      return 'ARMED';
+    }
+    if (now - (this.floorRequests.get(pair.symbol) ?? 0) < FLOOR_RETRY_MS) return 'PENDING';
+    this.floorRequests.set(pair.symbol, now);
+    void this.fetchDepth(pair.symbol).then(bids => {
+      const found = absorptionFloor(bids, targetUsd);
+      const current = this.pairs.find(p => p.symbol === pair.symbol);
+      if (!found) {
+        this.emit('NO_FLOOR', pair.symbol, { clusterUsd: Math.round(cluster.usd), targetUsd: Math.round(targetUsd), levels: bids.length });
+        return;
+      }
+      const filled = this.pairs.filter(p => p.status === 'FILLED').length;
+      if (!current || this.halted || current.status !== 'IDLE' || filled >= this.governor.maxActiveSlots) return;
+      this.arm(current, this.now(), found.floor, cluster, targetUsd, found.levels);
+    }).catch(error => {
+      this.emit('NO_FLOOR', pair.symbol, { clusterUsd: Math.round(cluster.usd), error: error instanceof Error ? error.message : String(error) });
+    });
+    return 'PENDING';
+  }
+
+  private arm(pair: FleetPair, now: number, floor: number, cluster: Cluster, targetUsd: number, levels: number) {
     pair.status = 'ARMED';
     pair.armedPrice = floor;
     pair.targetTp = floor * 1.005;
     pair.accumulatedFillUsd = 0;
     pair.armedAt = now;
+    this.armedPrices.set(pair.symbol, floor);
+    const live = this.ticks.get(pair.symbol);
+    if (live) live.pendingSellUsd = 0;
     this.emit('ARMED', pair.symbol, {
       price: pair.price, floor, targetTp: pair.targetTp, cvi: pair.cvi, dropPct: pair.dropPct,
+      clusterUsd: Math.round(cluster.usd), clusterPrice: cluster.price, absorptionTargetUsd: Math.round(targetUsd), floorLevels: levels,
       queueHurdleUsd: this.governor.usdQueueHurdle,
     });
   }
@@ -281,13 +387,15 @@ export class FleetEngine {
   }
 
   // ---------- controls ----------
+  // Manual arm uses the same 145% floor, so it needs a live liquidation cluster.
   manualArm(symbol: string) {
     const pair = this.pairs.find(p => p.symbol === symbol);
     if (!pair) throw new Error(`Unknown symbol ${symbol}`);
     if (!(pair.price > 0)) throw new Error(`No live price for ${symbol} yet`);
     if (pair.status !== 'IDLE') throw new Error(`${symbol} is ${pair.status}`);
-    this.arm(pair, this.now());
-    return pair;
+    const result = this.armAtAbsorptionFloor(pair, this.now());
+    if (result === 'NO_CLUSTER') throw new Error(`No long liquidations on ${symbol} in the last 30s; the 145% floor needs a real cascade`);
+    return { symbol, result };
   }
   halt() {
     this.halted = true;
@@ -346,6 +454,7 @@ export class FleetEngine {
     const symbols = TOP_30_UNIVERSE.map(p => p.symbol.toLowerCase());
     this.connect(`wss://fstream.binance.com/public/stream?streams=${symbols.map(s => `${s}@depth20@100ms`).join('/')}`);
     this.connect(`wss://fstream.binance.com/market/stream?streams=${symbols.flatMap(s => [`${s}@aggTrade`, `${s}@ticker`]).join('/')}`);
+    this.connect('wss://fstream.binance.com/market/ws/!forceOrder@arr');
   }
   stop() {
     if (this.timer) clearInterval(this.timer);
@@ -356,12 +465,22 @@ export class FleetEngine {
   private connect(url: string) {
     const ws = new WebSocket(url);
     this.sockets.add(ws);
-    ws.on('open', () => { this.openSockets.add(ws); this.feed.connected = this.openSockets.size === 2; });
+    ws.on('open', () => { this.openSockets.add(ws); this.feed.connected = this.openSockets.size === 3; });
     ws.on('message', raw => {
       this.feed.messages++;
       this.feed.lastMessageAt = new Date().toISOString();
       try {
         const payload = JSON.parse(raw.toString());
+        if (payload.e === 'forceOrder' && payload.o) {
+          const symbol = String(payload.o.s);
+          this.feed.liquidations++;
+          if (this.pairs.some(p => p.symbol === symbol)) {
+            this.feed.fleetLiquidations++;
+            this.feed.lastLiquidation = `${symbol} ${payload.o.S} $${Math.round(Number(payload.o.p) * Number(payload.o.q)).toLocaleString()} at ${new Date().toISOString()}`;
+          }
+          this.ingestLiquidation(symbol, String(payload.o.S), Number(payload.o.p), Number(payload.o.q));
+          return;
+        }
         const stream: string = payload.stream || '';
         const data = payload.data || {};
         const symbol = String(data.s || stream.split('@')[0]).toUpperCase();
