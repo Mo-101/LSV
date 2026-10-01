@@ -44,36 +44,36 @@ import {
 
 // ================= TOP 30 USD-M FUTURES UNIVERSE =================
 export const TOP_30_UNIVERSE = [
-  { symbol: 'BTCUSDT', name: 'Bitcoin', vol24h: 38.4, oiStability: 98, basePrice: 83810.0, minLotStepUsd: 83.81, is10DollarApproved: false },
-  { symbol: 'ETHUSDT', name: 'Ethereum', vol24h: 18.2, oiStability: 96, basePrice: 3120.5, minLotStepUsd: 3.12, is10DollarApproved: true },
-  { symbol: 'SOLUSDT', name: 'Solana', vol24h: 12.8, oiStability: 94, basePrice: 178.4, minLotStepUsd: 1.78, is10DollarApproved: true },
-  { symbol: 'BNBUSDT', name: 'BNB', vol24h: 3.4, oiStability: 97, basePrice: 585.2, minLotStepUsd: 5.85, is10DollarApproved: true },
-  { symbol: 'XRPUSDT', name: 'XRP', vol24h: 4.1, oiStability: 91, basePrice: 0.582, minLotStepUsd: 0.058, is10DollarApproved: true },
-  { symbol: 'DOGEUSDT', name: 'Dogecoin', vol24h: 5.6, oiStability: 89, basePrice: 0.1425, minLotStepUsd: 0.142, is10DollarApproved: true },
-  { symbol: 'SUIUSDT', name: 'Sui', vol24h: 3.8, oiStability: 93, basePrice: 1.845, minLotStepUsd: 0.184, is10DollarApproved: true },
-  { symbol: 'PEPEUSDT', name: 'Pepe 1000', vol24h: 4.2, oiStability: 86, basePrice: 0.0094, minLotStepUsd: 0.009, is10DollarApproved: true },
-  { symbol: 'AVAXUSDT', name: 'Avalanche', vol24h: 2.1, oiStability: 92, basePrice: 28.35, minLotStepUsd: 0.283, is10DollarApproved: true },
-  { symbol: 'LINKUSDT', name: 'Chainlink', vol24h: 1.9, oiStability: 95, basePrice: 11.45, minLotStepUsd: 0.114, is10DollarApproved: true },
-  { symbol: 'NEARUSDT', name: 'NEAR Protocol', vol24h: 2.4, oiStability: 90, basePrice: 4.82, minLotStepUsd: 0.482, is10DollarApproved: true },
-  { symbol: 'APTUSDT', name: 'Aptos', vol24h: 1.6, oiStability: 91, basePrice: 8.65, minLotStepUsd: 0.865, is10DollarApproved: true },
-  { symbol: 'ADAUSDT', name: 'Cardano', vol24h: 1.8, oiStability: 92, basePrice: 0.354, minLotStepUsd: 0.354, is10DollarApproved: true },
-  { symbol: 'SHIBUSDT', name: 'Shiba Inu', vol24h: 2.0, oiStability: 88, basePrice: 0.0182, minLotStepUsd: 0.018, is10DollarApproved: true },
-  { symbol: 'WIFUSDT', name: 'dogwifhat', vol24h: 2.7, oiStability: 85, basePrice: 2.45, minLotStepUsd: 0.245, is10DollarApproved: true },
-  { symbol: 'FETUSDT', name: 'Artificial Superintelligence', vol24h: 1.5, oiStability: 87, basePrice: 1.35, minLotStepUsd: 0.135, is10DollarApproved: true },
-  { symbol: 'RENDERUSDT', name: 'Render', vol24h: 1.4, oiStability: 89, basePrice: 5.62, minLotStepUsd: 0.562, is10DollarApproved: true },
-  { symbol: 'OPUSDT', name: 'Optimism', vol24h: 1.2, oiStability: 91, basePrice: 1.52, minLotStepUsd: 0.152, is10DollarApproved: true },
-  { symbol: 'ARBUSDT', name: 'Arbitrum', vol24h: 1.3, oiStability: 90, basePrice: 0.54, minLotStepUsd: 0.54, is10DollarApproved: true },
-  { symbol: 'INJUSDT', name: 'Injective', vol24h: 1.1, oiStability: 88, basePrice: 21.2, minLotStepUsd: 2.12, is10DollarApproved: true },
-  { symbol: 'TIAUSDT', name: 'Celestia', vol24h: 1.4, oiStability: 86, basePrice: 5.15, minLotStepUsd: 0.515, is10DollarApproved: true },
-  { symbol: 'FTMUSDT', name: 'Fantom', vol24h: 1.0, oiStability: 89, basePrice: 0.68, minLotStepUsd: 0.68, is10DollarApproved: true },
-  { symbol: 'SEIUSDT', name: 'Sei', vol24h: 1.2, oiStability: 88, basePrice: 0.42, minLotStepUsd: 0.42, is10DollarApproved: true },
-  { symbol: 'RUNEUSDT', name: 'THORChain', vol24h: 1.1, oiStability: 87, basePrice: 4.95, minLotStepUsd: 0.495, is10DollarApproved: true },
-  { symbol: 'GALAUSDT', name: 'Gala', vol24h: 0.85, oiStability: 84, basePrice: 0.022, minLotStepUsd: 0.022, is10DollarApproved: true },
-  { symbol: 'TONUSDT', name: 'Toncoin', vol24h: 1.7, oiStability: 94, basePrice: 5.8, minLotStepUsd: 0.58, is10DollarApproved: true },
-  { symbol: 'FLOKIUSDT', name: 'Floki', vol24h: 1.3, oiStability: 85, basePrice: 0.155, minLotStepUsd: 0.155, is10DollarApproved: true },
-  { symbol: 'FILUSDT', name: 'Filecoin', vol24h: 0.95, oiStability: 89, basePrice: 3.75, minLotStepUsd: 0.375, is10DollarApproved: true },
-  { symbol: 'KASUSDT', name: 'Kaspa', vol24h: 1.1, oiStability: 91, basePrice: 0.138, minLotStepUsd: 0.138, is10DollarApproved: true },
-  { symbol: 'AAVEUSDT', name: 'Aave', vol24h: 1.5, oiStability: 93, basePrice: 154.2, minLotStepUsd: 15.42, is10DollarApproved: false }
+  { symbol: 'BTCUSDT', name: 'Bitcoin', oiStability: 98, minLotStepUsd: 83.81, is10DollarApproved: false },
+  { symbol: 'ETHUSDT', name: 'Ethereum', oiStability: 96, minLotStepUsd: 3.12, is10DollarApproved: true },
+  { symbol: 'SOLUSDT', name: 'Solana', oiStability: 94, minLotStepUsd: 1.78, is10DollarApproved: true },
+  { symbol: 'BNBUSDT', name: 'BNB', oiStability: 97, minLotStepUsd: 5.85, is10DollarApproved: true },
+  { symbol: 'XRPUSDT', name: 'XRP', oiStability: 91, minLotStepUsd: 0.058, is10DollarApproved: true },
+  { symbol: 'DOGEUSDT', name: 'Dogecoin', oiStability: 89, minLotStepUsd: 0.142, is10DollarApproved: true },
+  { symbol: 'SUIUSDT', name: 'Sui', oiStability: 93, minLotStepUsd: 0.184, is10DollarApproved: true },
+  { symbol: '1000PEPEUSDT', name: 'Pepe 1000', oiStability: 86, minLotStepUsd: 0.009, is10DollarApproved: true },
+  { symbol: 'AVAXUSDT', name: 'Avalanche', oiStability: 92, minLotStepUsd: 0.283, is10DollarApproved: true },
+  { symbol: 'LINKUSDT', name: 'Chainlink', oiStability: 95, minLotStepUsd: 0.114, is10DollarApproved: true },
+  { symbol: 'NEARUSDT', name: 'NEAR Protocol', oiStability: 90, minLotStepUsd: 0.482, is10DollarApproved: true },
+  { symbol: 'APTUSDT', name: 'Aptos', oiStability: 91, minLotStepUsd: 0.865, is10DollarApproved: true },
+  { symbol: 'ADAUSDT', name: 'Cardano', oiStability: 92, minLotStepUsd: 0.354, is10DollarApproved: true },
+  { symbol: '1000SHIBUSDT', name: 'Shiba Inu', oiStability: 88, minLotStepUsd: 0.018, is10DollarApproved: true },
+  { symbol: 'WIFUSDT', name: 'dogwifhat', oiStability: 85, minLotStepUsd: 0.245, is10DollarApproved: true },
+  { symbol: 'FETUSDT', name: 'Artificial Superintelligence', oiStability: 87, minLotStepUsd: 0.135, is10DollarApproved: true },
+  { symbol: 'RENDERUSDT', name: 'Render', oiStability: 89, minLotStepUsd: 0.562, is10DollarApproved: true },
+  { symbol: 'OPUSDT', name: 'Optimism', oiStability: 91, minLotStepUsd: 0.152, is10DollarApproved: true },
+  { symbol: 'ARBUSDT', name: 'Arbitrum', oiStability: 90, minLotStepUsd: 0.54, is10DollarApproved: true },
+  { symbol: 'INJUSDT', name: 'Injective', oiStability: 88, minLotStepUsd: 2.12, is10DollarApproved: true },
+  { symbol: 'TIAUSDT', name: 'Celestia', oiStability: 86, minLotStepUsd: 0.515, is10DollarApproved: true },
+  { symbol: 'FTMUSDT', name: 'Fantom', oiStability: 89, minLotStepUsd: 0.68, is10DollarApproved: true },
+  { symbol: 'SEIUSDT', name: 'Sei', oiStability: 88, minLotStepUsd: 0.42, is10DollarApproved: true },
+  { symbol: 'RUNEUSDT', name: 'THORChain', oiStability: 87, minLotStepUsd: 0.495, is10DollarApproved: true },
+  { symbol: 'GALAUSDT', name: 'Gala', oiStability: 84, minLotStepUsd: 0.022, is10DollarApproved: true },
+  { symbol: 'TONUSDT', name: 'Toncoin', oiStability: 94, minLotStepUsd: 0.58, is10DollarApproved: true },
+  { symbol: '1000FLOKIUSDT', name: 'Floki', oiStability: 85, minLotStepUsd: 0.155, is10DollarApproved: true },
+  { symbol: 'FILUSDT', name: 'Filecoin', oiStability: 89, minLotStepUsd: 0.375, is10DollarApproved: true },
+  { symbol: 'KASUSDT', name: 'Kaspa', oiStability: 91, minLotStepUsd: 0.138, is10DollarApproved: true },
+  { symbol: 'AAVEUSDT', name: 'Aave', oiStability: 93, minLotStepUsd: 15.42, is10DollarApproved: false }
 ];
 
 const DEFAULT_GOVERNOR: ConcurrencyGovernorConfig = {
@@ -102,6 +102,15 @@ const DEFAULT_WEBHOOK_CONFIG: WebhookDispatcherConfig = {
   lastPingStatus: 'IDLE',
 };
 
+interface LiveTick {
+  mid: number;
+  lastTrade: number;
+  bids: Array<[number, number]>;
+  tradeTimes: number[];
+  pendingSellUsd: number;
+  quoteVolume24h: number;
+}
+
 interface ShadowTraderConsoleProps {
   onBackToBlueprint?: () => void;
 }
@@ -129,13 +138,13 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
     TOP_30_UNIVERSE.map((p) => ({
       symbol: p.symbol,
       name: p.name,
-      price: p.basePrice,
-      refPrice: p.basePrice,
-      dropPct: 0.002,
-      cvi: 1.45,
-      cushionPct: 152,
-      tickVelocity: 14,
-      volume24hUsd: p.vol24h * 1000000000,
+      price: 0,
+      refPrice: 0,
+      dropPct: 0,
+      cvi: 0,
+      cushionPct: 0,
+      tickVelocity: 0,
+      volume24hUsd: 0,
       openInterestStability: p.oiStability,
       status: 'IDLE',
       requiredQueueUsd: 150000,
@@ -268,12 +277,27 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
     return () => clearInterval(interval);
   }, [fetchTrades, fetchPythonScript]);
 
-  // ================= LIVE WEBSOCKET INGESTION =================
+  // ================= LIVE WEBSOCKET INGESTION (all pairs, real Binance ticks) =================
+  // Raw ticks are kept in refs; the 1s fleet loop below reads them, so 30 pairs
+  // of depth and trades do not re-render the page on every message.
+  const liveTicksRef = useRef(new Map<string, LiveTick>());
+  const armedPricesRef = useRef(new Map<string, number>());
+  const selectedPairRef = useRef(selectedPair);
+  selectedPairRef.current = selectedPair;
+  const liveTick = (symbol: string) => {
+    let tick = liveTicksRef.current.get(symbol);
+    if (!tick) {
+      tick = { mid: 0, lastTrade: 0, bids: [], tradeTimes: [], pendingSellUsd: 0, quoteVolume24h: 0 };
+      liveTicksRef.current.set(symbol, tick);
+    }
+    return tick;
+  };
+
   useEffect(() => {
-    const symbolLower = selectedPair.toLowerCase();
+    const symbols = TOP_30_UNIVERSE.map(p => p.symbol.toLowerCase());
     const wsUrls = [
-      `wss://fstream.binance.com/public/stream?streams=${symbolLower}@depth20@100ms`,
-      `wss://fstream.binance.com/market/stream?streams=${symbolLower}@aggTrade`,
+      `wss://fstream.binance.com/public/stream?streams=${symbols.map(s => `${s}@depth20@100ms`).join('/')}`,
+      `wss://fstream.binance.com/market/stream?streams=${symbols.flatMap(s => [`${s}@aggTrade`, `${s}@ticker`]).join('/')}`,
     ];
 
     setConnectionStatus('CONNECTING');
@@ -293,104 +317,38 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
       ws.onmessage = (event) => {
         try {
           const payload = JSON.parse(event.data);
-          const stream = payload.stream || '';
+          const stream: string = payload.stream || '';
           const data = payload.data || {};
           if (data.e) receivedStreams.add(wsUrl);
           if (receivedStreams.size === wsUrls.length) setConnectionStatus('CONNECTED');
+          const symbol = String(data.s || stream.split('@')[0]).toUpperCase();
+          const tick = liveTick(symbol);
 
-          if (stream.includes('depth20')) {
+          if (stream.includes('@depth20')) {
             const rawBids: Array<[string, string]> = data.b || [];
             const rawAsks: Array<[string, string]> = data.a || [];
             if (rawBids.length > 0 && rawAsks.length > 0) {
               const pBids = rawBids.map(b => [parseFloat(b[0]), parseFloat(b[1])] as [number, number]);
               const pAsks = rawAsks.map(a => [parseFloat(a[0]), parseFloat(a[1])] as [number, number]);
-              const mid = (pBids[0][0] + pAsks[0][0]) / 2;
-              setBidsDepth(pBids);
-              setAsksDepth(pAsks);
-
-              // Update fleet telemetry for selected pair
-              setFleet(prev => prev.map(item => {
-                if (item.symbol !== selectedPair) return item;
-                const ref = item.refPrice > 0 ? item.refPrice : mid;
-                const drop = Math.max(0, (ref - mid) / ref);
-                const topBidUsd = pBids.slice(0, 10).reduce((sum, b) => sum + (b[0] * b[1]), 0);
-                const cviScore = Math.min(6.5, Math.max(1.1, (drop * 2800000) / Math.max(10000, topBidUsd)));
-                
-                return {
-                  ...item,
-                  price: mid,
-                  refPrice: ref,
-                  dropPct: drop,
-                  cvi: Math.round(cviScore * 100) / 100,
-                  cushionPct: Math.round(Math.min(220, Math.max(90, (topBidUsd / governor.usdQueueHurdle) * 100))),
-                };
-              }));
+              tick.bids = pBids;
+              tick.mid = (pBids[0][0] + pAsks[0][0]) / 2;
+              if (symbol === selectedPairRef.current) {
+                setBidsDepth(pBids);
+                setAsksDepth(pAsks);
+              }
             }
-          } else if (stream.includes('aggTrade')) {
+          } else if (stream.includes('@aggTrade')) {
             const p = parseFloat(data.p);
             const q = parseFloat(data.q);
-            const tradeUsd = p * q;
-
-            // Rolling tick velocity (1s window)
-            const now = Date.now();
-            tradeTimestampsRef.current.push(now);
-            const oneSecAgo = now - 1000;
-            while (tradeTimestampsRef.current.length > 0 && tradeTimestampsRef.current[0] < oneSecAgo) {
-              tradeTimestampsRef.current.shift();
-            }
-            const currentVel = tradeTimestampsRef.current.length;
-            setActiveVelocity(currentVel);
-
-            // Update fleet pair
-            setFleet(prev => prev.map(item => {
-              if (item.symbol !== selectedPair) return item;
-              return { ...item, tickVelocity: currentVel };
-            }));
-
-            // If ARMED, authenticate real USD queue penetration
-            setFleet(prev => prev.map(item => {
-              if (operationalMode !== 'PAPER' || !isScanningActive || isHalted || !governor.autoExecute) return item;
-              if (item.symbol !== selectedPair || item.status !== 'ARMED') return item;
-              if (data.m === true && item.armedPrice && p <= item.armedPrice) {
-                const nextFillUsd = (item.accumulatedFillUsd || 0) + tradeUsd;
-                if (nextFillUsd >= governor.usdQueueHurdle) {
-                  // Concurrency Governor Slot Allocation
-                  const currentlyOccupied = prev.filter(x => x.status === 'FILLED').length;
-                  if (currentlyOccupied < governor.maxActiveSlots) {
-                    const allocatedSlot = currentlyOccupied + 1;
-                    const clearanceSec = item.fillTime ? ((now - item.fillTime) / 1000).toFixed(1) : '1.8';
-
-                    // Dispatch Detonation Alert
-                    dispatchSignal({
-                      type: 'FILLED',
-                      symbol: item.symbol,
-                      title: `🚨 [AIR POCKET DETONATION] — ${item.symbol}`,
-                      badgeColor: 'emerald',
-                      metrics: {
-                        'Vacuum Metric': `CVI ${item.cvi.toFixed(2)}x (Thin Book)`,
-                        'Queue Hurdle': `$${governor.usdQueueHurdle.toLocaleString()} Absorbed (${clearanceSec}s)`,
-                        'Net Entry': `$${item.armedPrice.toFixed(4)} (Post-Only Filled)`,
-                        'Target TP': `$${(item.targetTp || item.armedPrice * 1.005).toFixed(4)} (+0.50% Snapback)`,
-                        'Chronometer': '90s Mechanical Countdown',
-                        'Execution': `Active (${operationalMode} Mode Slot #${allocatedSlot})`
-                      },
-                      rawPayload: `🚨 [AIR POCKET DETONATION] — ${item.symbol}\n• Queue: $150,000 Absorbed (${clearanceSec}s)\n• Entry: $${item.armedPrice.toFixed(4)}\n• TP: $${(item.targetTp || item.armedPrice * 1.005).toFixed(4)}\n• Mode: ${operationalMode}`
-                    });
-
-                    return {
-                      ...item,
-                      status: 'FILLED',
-                      fillTime: now,
-                      accumulatedFillUsd: nextFillUsd,
-                      activeSlot: allocatedSlot,
-                      holdSeconds: 0,
-                    };
-                  }
-                }
-                return { ...item, accumulatedFillUsd: nextFillUsd };
-              }
-              return item;
-            }));
+            if (!(p > 0 && q > 0)) return;
+            tick.lastTrade = p;
+            tick.tradeTimes.push(Date.now());
+            // m=true: buyer is maker, so the aggressor is selling into bids.
+            const armedPrice = armedPricesRef.current.get(symbol);
+            if (data.m === true && armedPrice !== undefined && p <= armedPrice) tick.pendingSellUsd += p * q;
+          } else if (stream.includes('@ticker')) {
+            const quoteVolume = parseFloat(data.q);
+            if (quoteVolume > 0) tick.quoteVolume24h = quoteVolume;
           }
         } catch {
           // ignore corrupted frame
@@ -419,7 +377,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
       reconnectTimers.forEach(clearTimeout);
       sockets.forEach(ws => ws.close());
     };
-  }, [selectedPair, governor.usdQueueHurdle, governor.maxActiveSlots, governor.autoExecute, operationalMode, isScanningActive, isHalted, dispatchSignal]);
+  }, []);
 
   // ================= SIMULATED FLEET ENGINE DYNAMICS =================
   useEffect(() => {
@@ -433,26 +391,25 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
 
         return prev.map(pair => {
           let updatedPair = { ...pair };
-          if (pair.symbol !== selectedPair && pair.status !== 'FILLED') {
-            const jitter = (Math.random() - 0.505) * 0.0015;
-            const nextPrice = Math.max(0.0001, pair.price * (1 + jitter));
-            const drop = Math.max(0, (pair.refPrice - nextPrice) / pair.refPrice);
-            
-            // Periodically form realistic orderbook vacuum pockets (CVI > 3.0) when displacement reaches >=0.8%
-            const baseCvi = drop >= 0.008 ? 3.2 + Math.random() * 1.6 : pair.cvi + (Math.random() - 0.5) * 0.15;
-            const syntheticCvi = Math.min(5.5, Math.max(1.2, baseCvi));
-            const vel = Math.floor(Math.max(8, Math.min(60, pair.tickVelocity + (Math.random() - 0.5) * 6)));
-            
-            // Random low-probability toxic insider exploit simulation (OI sudden plunge > 15%)
-            const currentOiPlunge = pair.oiPlungePct || 0;
-
+          const live = liveTicksRef.current.get(pair.symbol);
+          if (live) {
+            while (live.tradeTimes.length > 0 && live.tradeTimes[0] < now - 1000) live.tradeTimes.shift();
+            updatedPair.tickVelocity = live.tradeTimes.length;
+            if (live.quoteVolume24h > 0) updatedPair.volume24hUsd = live.quoteVolume24h;
+          }
+          if (pair.status !== 'FILLED' && live && live.mid > 0) {
+            // Same depth formulas as before, now from real ticks for every pair.
+            const ref = pair.refPrice > 0 ? pair.refPrice : live.mid;
+            const drop = Math.max(0, (ref - live.mid) / ref);
+            const topBidUsd = live.bids.slice(0, 10).reduce((sum, b) => sum + (b[0] * b[1]), 0);
+            const cviScore = Math.min(6.5, Math.max(1.1, (drop * 2800000) / Math.max(10000, topBidUsd)));
             updatedPair = {
               ...updatedPair,
-              price: nextPrice,
+              price: live.mid,
+              refPrice: ref,
               dropPct: drop,
-              cvi: Math.round(syntheticCvi * 100) / 100,
-              tickVelocity: vel,
-              oiPlungePct: currentOiPlunge
+              cvi: Math.round(cviScore * 100) / 100,
+              cushionPct: Math.round(Math.min(220, Math.max(90, (topBidUsd / governor.usdQueueHurdle) * 100))),
             };
           }
 
@@ -512,9 +469,15 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
           }
 
           // Autonomous Queue Absorption & Air-Pocket Detonation (Armed -> Filled)
+          if (updatedPair.status === 'ARMED' && updatedPair.armedPrice) {
+            // A new floor starts counting real volume from zero.
+            if (armedPricesRef.current.get(pair.symbol) !== updatedPair.armedPrice && live) live.pendingSellUsd = 0;
+            armedPricesRef.current.set(pair.symbol, updatedPair.armedPrice);
+          }
           if (updatedPair.status === 'ARMED' && governor.autoExecute && operationalMode === 'PAPER') {
-            // Taker sell orders hit the book: accumulate $25k-$45k per second towards the $150,000 USD hurdle
-            const incomingTakerVol = 28000 + Math.floor(Math.random() * 22000);
+            // Real seller-initiated volume at or below the floor since the last tick
+            const incomingTakerVol = live ? live.pendingSellUsd : 0;
+            if (live) live.pendingSellUsd = 0;
             const nextQueueTotal = (updatedPair.accumulatedFillUsd || 0) + incomingTakerVol;
             updatedPair.accumulatedFillUsd = nextQueueTotal;
 
@@ -561,21 +524,19 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
             const elapsed = Math.floor((now - updatedPair.fillTime) / 1000);
             updatedPair.holdSeconds = elapsed;
             
-            // Simulating organic orderbook recovery bounce towards +0.50% TP
             const entryPrice = updatedPair.armedPrice || updatedPair.price;
             const targetTp = updatedPair.targetTp || entryPrice * 1.005;
-            
-            // Progressive snapback price trajectory: reaches TP in ~15-30s organically
-            const bounceProgress = Math.min(1.05, (elapsed / 22) + ((Math.random() - 0.45) * 0.1));
-            const simulatedCurrentPrice = entryPrice + (targetTp - entryPrice) * bounceProgress;
-            updatedPair.price = simulatedCurrentPrice;
+
+            // Real price: latest trade, else order-book mid.
+            const livePrice = live?.lastTrade || live?.mid;
+            if (livePrice && livePrice > 0) updatedPair.price = livePrice;
 
             const pnlPct = ((updatedPair.price - entryPrice) / entryPrice) * 100;
             updatedPair.pnlPct = Math.round(pnlPct * 1000) / 1000;
             updatedPair.pnlUsd = Math.round(((pnlPct / 100) * governor.marginPerSlotUsd * 10) * 100) / 100;
 
             // Exit Condition A: Take Profit Hit (+0.50% snapback)
-            if (updatedPair.price >= targetTp || bounceProgress >= 1.0) {
+            if (updatedPair.price >= targetTp) {
               handleFleetTradeClose(updatedPair, targetTp, 'TP_HIT (Mean Reversion)');
               updatedPair.status = 'COOLDOWN';
               setTimeout(() => {
@@ -592,9 +553,12 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
             }
           }
 
+          if (updatedPair.status !== 'ARMED') armedPricesRef.current.delete(pair.symbol);
           return updatedPair;
         });
       });
+      const selected = liveTicksRef.current.get(selectedPair);
+      if (selected) setActiveVelocity(selected.tradeTimes.length);
     }, 1000);
 
     return () => clearInterval(fleetInterval);
@@ -759,94 +723,45 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
 
   // ================= SIMULATION CONTROLS FOR MANUAL AUDIT =================
   const triggerSimulatedFleetCascade = (targetSymbol: string) => {
-    setFleet(prev => prev.map(p => {
-      if (p.symbol !== targetSymbol) return p;
-      const dropPrice = p.price * 0.991;
-      const floor = dropPrice * 0.998;
-      return {
-        ...p,
-        price: dropPrice,
-        dropPct: 0.009,
-        cvi: 4.25,
-        cushionPct: 148,
-        tickVelocity: 28,
-        status: 'ARMED',
-        armedPrice: floor,
-        targetTp: floor * 1.005,
-        accumulatedFillUsd: 0,
-      };
-    }));
+    const pair = fleet.find(p => p.symbol === targetSymbol);
+    if (!pair || !(pair.price > 0)) {
+      setToastMessage(`No live price for ${targetSymbol} yet`);
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
+    if (pair.status !== 'IDLE') return;
+    // Arms at the live price with the same floor and target as automatic arming.
+    const floor = pair.price * 0.997;
+    setFleet(prev => prev.map(p => p.symbol === targetSymbol && p.status === 'IDLE'
+      ? { ...p, status: 'ARMED', armedPrice: floor, targetTp: floor * 1.005, accumulatedFillUsd: 0 }
+      : p));
 
     dispatchSignal({
       type: 'ARMED',
       symbol: targetSymbol,
-      title: `🎯 [DISLOCATION DETECTED] — ${targetSymbol}`,
+      title: `🎯 [MANUAL TRAP ARMED] — ${targetSymbol}`,
       badgeColor: 'amber',
       metrics: {
-        'Drop Magnitude': '0.90% Air Pocket Dislocation',
-        'CVI Reading': '4.25x (Severe Order Book Void)',
-        'Target Floor': '145% Cumulative Cushion',
-        'Queue Hurdle': '$150,000 USD Real Taker Sales'
+        'Live Price': `$${pair.price.toFixed(4)}`,
+        'Displacement': `${(pair.dropPct * 100).toFixed(2)}% Drop`,
+        'CVI Reading': `${pair.cvi.toFixed(2)}x`,
+        'Floor': `$${floor.toFixed(4)}`,
+        'Queue Hurdle': `$${governor.usdQueueHurdle.toLocaleString()} USD Real Taker Sales`
       },
-      rawPayload: `🎯 [DISLOCATION DETECTED] — ${targetSymbol}\n• Drop: 0.90%\n• CVI: 4.25x\n• Floor: 145% Cushion`
+      rawPayload: `🎯 [MANUAL TRAP ARMED] — ${targetSymbol}\n• Live price: $${pair.price.toFixed(4)}\n• Floor: $${floor.toFixed(4)}\n• TP: $${(floor * 1.005).toFixed(4)}`
     });
 
-    setToastMessage(`Dislocation injected: ${targetSymbol} net armed at 145% floor`);
+    setToastMessage(`${targetSymbol} armed at live price; fills need real sell volume`);
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  const satisfyQueueHurdle = (targetSymbol: string) => {
-    if (operationalMode !== 'PAPER' || isHalted) return;
-    setFleet(prev => {
-      const activeCount = prev.filter(p => p.status === 'FILLED').length;
-      if (activeCount >= governor.maxActiveSlots) {
-        setToastMessage(`CONCURRENCY BLOCKED: All ${governor.maxActiveSlots} active slots full. Prioritizing highest CVI.`);
-        setTimeout(() => setToastMessage(null), 3500);
-        return prev;
-      }
-
-      return prev.map(p => {
-        if (p.symbol !== targetSymbol) return p;
-        const entry = p.armedPrice || p.price;
-        const tp = p.targetTp || entry * 1.005;
-
-        dispatchSignal({
-          type: 'FILLED',
-          symbol: targetSymbol,
-          title: `🚨 [AIR POCKET DETONATION] — ${targetSymbol}`,
-          badgeColor: 'emerald',
-          metrics: {
-            'Cascade Volume': '$150,000 USD Absorbed (1.8s)',
-            'Vacuum Metric': `CVI ${(p.cvi || 3.8).toFixed(2)}x`,
-            'Net Entry': `$${entry.toFixed(4)} (Post-Only Filled)`,
-            'Target TP': `$${tp.toFixed(4)} (+0.50% Snapback)`,
-            'Chronometer': '90s Mechanical Countdown',
-            'Execution Slot': `Slot #${activeCount + 1} (${operationalMode} Mode)`
-          },
-          rawPayload: `🚨 [AIR POCKET DETONATION] — ${targetSymbol}\n• Queue: $150,000 Penetrated (1.8s)\n• Entry: $${entry.toFixed(4)}\n• TP: $${tp.toFixed(4)}`
-        });
-
-        return {
-          ...p,
-          status: 'FILLED',
-          fillTime: Date.now(),
-          accumulatedFillUsd: governor.usdQueueHurdle,
-          activeSlot: activeCount + 1,
-          holdSeconds: 0,
-        };
-      });
-    });
-    setToastMessage(`$150,000 USD Queue Penetrated: ${targetSymbol} filled in Slot`);
+  const satisfyQueueHurdle = (_symbol: string) => {
+    setToastMessage('Fills come only from real sell volume at or below the floor.');
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  const executeCleanSnapback = (targetSymbol: string) => {
-    const p = fleet.find(x => x.symbol === targetSymbol);
-    if (!p || p.status !== 'FILLED') return;
-    const tp = p.targetTp || p.price * 1.005;
-    handleFleetTradeClose(p, tp, 'TP_HIT (Mean Reversion)');
-    setFleet(prev => prev.map(x => x.symbol === targetSymbol ? { ...x, status: 'IDLE' } : x));
-    setToastMessage(`Snapback captured: ${targetSymbol} +0.50% profit recorded`);
+  const executeCleanSnapback = (_symbol: string) => {
+    setToastMessage('Exits come only from real prices: take-profit or the 90s stop.');
     setTimeout(() => setToastMessage(null), 3000);
   };
 
@@ -1680,7 +1595,7 @@ export const ShadowTraderConsole: React.FC<ShadowTraderConsoleProps> = () => {
 
                         {/* 2. PRICE */}
                         <td className="py-2.5 px-3 font-mono font-semibold text-zinc-200 whitespace-nowrap">
-                          ${pair.price >= 10 ? pair.price.toFixed(2) : pair.price.toFixed(4)}
+                          {pair.price > 0 ? `$${pair.price >= 10 ? pair.price.toFixed(2) : pair.price.toFixed(4)}` : '—'}
                         </td>
 
                         {/* 3. DISPLACEMENT DROP % */}
