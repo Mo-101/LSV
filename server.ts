@@ -8,6 +8,7 @@ import { GoogleGenAI } from '@google/genai';
 import WebSocket from 'ws';
 import { finiteNumber } from './src/engine/tradeNumbers';
 import { LiquidationWindow } from './src/engine/liquidationWindow';
+import { FleetEngine } from './src/engine/fleetEngine';
 
 dotenv.config();
 
@@ -16,6 +17,70 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json());
+
+// ================= SERVER FLEET WORKER (30 pairs, real Binance ticks) =================
+// Runs the dashboard's 30-pair fleet logic on the server, 24/7. No exchange
+// orders, no alerts. Its closed trades go to their own journal.
+const fleetStateDir = process.env.LSV_STATE_DIR || path.join(__dirname, '.lsv-state');
+const FLEET_TRADES_PATH = path.join(fleetStateDir, 'fleet-trades.csv');
+fs.mkdirSync(fleetStateDir, { recursive: true });
+if (!fs.existsSync(FLEET_TRADES_PATH)) {
+  fs.writeFileSync(FLEET_TRADES_PATH, 'Timestamp,Symbol,Entry_Price,Exit_Price,CVI_Entry,Queue_Clearance_Sec,Hold_Seconds,Outcome,PnL_Pct,PnL_USD,Fee_USD,Net_PnL_USD,Net_PnL_Pct\n');
+}
+const fleetEngine = new FleetEngine({
+  onTrade: r => fs.appendFileSync(FLEET_TRADES_PATH,
+    `${r.timestamp},${r.symbol},${r.entryPrice},${r.exitPrice},${r.cviAtEntry},${r.queueClearanceSeconds},${r.holdSeconds},"${r.outcome}",${r.pnlPct},${r.pnlUsd},${r.feeUsd},${r.netPnlUsd},${r.netPnlPct}\n`),
+});
+
+// Read-only fleet endpoints may be called from other apps' browsers.
+app.use('/api/fleet', (req, res, next) => {
+  if (req.method === 'GET' || req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', 'Last-Event-ID');
+  }
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+app.get('/api/fleet', (_req, res) => res.json(fleetEngine.snapshot()));
+app.get('/api/fleet/armed', (_req, res) => {
+  const snapshot = fleetEngine.snapshot();
+  res.json({ updatedAt: snapshot.updatedAt, mode: snapshot.mode, halted: snapshot.halted, queueHurdleUsd: snapshot.governor.usdQueueHurdle,
+    armed: snapshot.pairs.filter(p => p.status === 'ARMED') });
+});
+app.get('/api/fleet/events', (req, res) => {
+  const since = Number(req.query.since) || 0;
+  res.json({ lastEventSeq: fleetEngine.snapshot().lastEventSeq, events: fleetEngine.eventsSince(since) });
+});
+app.get('/api/fleet/trades', (req, res) => {
+  const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 100));
+  const lines = fs.readFileSync(FLEET_TRADES_PATH, 'utf-8').trim().split('\n').slice(1);
+  const trades = lines.map(line => {
+    const c = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(x => x.replace(/^"|"$/g, ''));
+    return { timestamp: c[0], symbol: c[1], entryPrice: +c[2], exitPrice: +c[3], cviAtEntry: +c[4], queueClearanceSeconds: +c[5],
+      holdSeconds: +c[6], outcome: c[7], pnlPct: +c[8], pnlUsd: +c[9], feeUsd: +c[10], netPnlUsd: +c[11], netPnlPct: +c[12] };
+  }).reverse().slice(0, limit);
+  res.json({ trades });
+});
+// Live stream: `snapshot` every second, `signal` for every fleet event (ARMED, FILLED, exits...).
+app.get('/api/fleet/stream', (req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+  const send = (event: string, data: unknown, id?: number) => res.write(`${id ? `id: ${id}\n` : ''}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  const resumeFrom = Number(req.headers['last-event-id'] || req.query.since) || 0;
+  for (const event of fleetEngine.eventsSince(resumeFrom)) send('signal', event, event.seq);
+  send('snapshot', fleetEngine.snapshot());
+  const timer = setInterval(() => send('snapshot', fleetEngine.snapshot()), 1000);
+  const unsubscribe = fleetEngine.subscribe(event => send('signal', event, event.seq));
+  req.on('close', () => { clearInterval(timer); unsubscribe(); });
+});
+const fleetControl = (action: (body: any) => unknown) => (req: express.Request, res: express.Response) => {
+  try { res.json({ ok: true, result: action(req.body || {}), fleet: fleetEngine.snapshot() }); }
+  catch (error: any) { res.status(400).json({ ok: false, error: error.message }); }
+};
+app.post('/api/fleet/arm', fleetControl(body => fleetEngine.manualArm(String(body.symbol || '').toUpperCase())));
+app.post('/api/fleet/halt', fleetControl(() => fleetEngine.halt()));
+app.post('/api/fleet/resume', fleetControl(() => fleetEngine.resume()));
+app.post('/api/fleet/mode', fleetControl(body => fleetEngine.setMode(body.mode)));
+app.post('/api/fleet/governor', fleetControl(body => fleetEngine.updateGovernor(body.patch || {})));
 
 const feedHealth = {
   liquidations: { connected: false, messages: 0, lastMessageAt: null as string | null },
@@ -34,6 +99,7 @@ app.get('/api/health', (_req, res) => {
       binanceConfigured: Boolean(process.env.BINANCE_KEY && process.env.BINANCE_SECRET),
       note: 'Configured does not mean authenticated.',
     },
+    fleetWorker: (() => { const f = fleetEngine.snapshot(); return { feed: f.feed, mode: f.mode, halted: f.halted, counts: f.counts, lastEventSeq: f.lastEventSeq }; })(),
     execution: { implemented: false, mode: 'simulation', exchangeOrdersEnabled: false },
   });
 });
@@ -795,6 +861,7 @@ async function startServer() {
     console.log(`Liquidation Vacuum Engine running at http://0.0.0.0:${PORT}`);
     // Start background scanner after server is up
     setTimeout(startServerSideFleetScanner, 2000);
+    if (process.env.LSV_DISABLE_WORKERS !== '1') fleetEngine.start();
   });
 }
 

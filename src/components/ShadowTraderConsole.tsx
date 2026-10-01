@@ -42,39 +42,7 @@ import {
   DispatchedSignalCard 
 } from '../types';
 
-// ================= TOP 30 USD-M FUTURES UNIVERSE =================
-export const TOP_30_UNIVERSE = [
-  { symbol: 'BTCUSDT', name: 'Bitcoin', oiStability: 98, minLotStepUsd: 83.81, is10DollarApproved: false },
-  { symbol: 'ETHUSDT', name: 'Ethereum', oiStability: 96, minLotStepUsd: 3.12, is10DollarApproved: true },
-  { symbol: 'SOLUSDT', name: 'Solana', oiStability: 94, minLotStepUsd: 1.78, is10DollarApproved: true },
-  { symbol: 'BNBUSDT', name: 'BNB', oiStability: 97, minLotStepUsd: 5.85, is10DollarApproved: true },
-  { symbol: 'XRPUSDT', name: 'XRP', oiStability: 91, minLotStepUsd: 0.058, is10DollarApproved: true },
-  { symbol: 'DOGEUSDT', name: 'Dogecoin', oiStability: 89, minLotStepUsd: 0.142, is10DollarApproved: true },
-  { symbol: 'SUIUSDT', name: 'Sui', oiStability: 93, minLotStepUsd: 0.184, is10DollarApproved: true },
-  { symbol: '1000PEPEUSDT', name: 'Pepe 1000', oiStability: 86, minLotStepUsd: 0.009, is10DollarApproved: true },
-  { symbol: 'AVAXUSDT', name: 'Avalanche', oiStability: 92, minLotStepUsd: 0.283, is10DollarApproved: true },
-  { symbol: 'LINKUSDT', name: 'Chainlink', oiStability: 95, minLotStepUsd: 0.114, is10DollarApproved: true },
-  { symbol: 'NEARUSDT', name: 'NEAR Protocol', oiStability: 90, minLotStepUsd: 0.482, is10DollarApproved: true },
-  { symbol: 'APTUSDT', name: 'Aptos', oiStability: 91, minLotStepUsd: 0.865, is10DollarApproved: true },
-  { symbol: 'ADAUSDT', name: 'Cardano', oiStability: 92, minLotStepUsd: 0.354, is10DollarApproved: true },
-  { symbol: '1000SHIBUSDT', name: 'Shiba Inu', oiStability: 88, minLotStepUsd: 0.018, is10DollarApproved: true },
-  { symbol: 'WIFUSDT', name: 'dogwifhat', oiStability: 85, minLotStepUsd: 0.245, is10DollarApproved: true },
-  { symbol: 'FETUSDT', name: 'Artificial Superintelligence', oiStability: 87, minLotStepUsd: 0.135, is10DollarApproved: true },
-  { symbol: 'RENDERUSDT', name: 'Render', oiStability: 89, minLotStepUsd: 0.562, is10DollarApproved: true },
-  { symbol: 'OPUSDT', name: 'Optimism', oiStability: 91, minLotStepUsd: 0.152, is10DollarApproved: true },
-  { symbol: 'ARBUSDT', name: 'Arbitrum', oiStability: 90, minLotStepUsd: 0.54, is10DollarApproved: true },
-  { symbol: 'INJUSDT', name: 'Injective', oiStability: 88, minLotStepUsd: 2.12, is10DollarApproved: true },
-  { symbol: 'TIAUSDT', name: 'Celestia', oiStability: 86, minLotStepUsd: 0.515, is10DollarApproved: true },
-  { symbol: 'FTMUSDT', name: 'Fantom', oiStability: 89, minLotStepUsd: 0.68, is10DollarApproved: true },
-  { symbol: 'SEIUSDT', name: 'Sei', oiStability: 88, minLotStepUsd: 0.42, is10DollarApproved: true },
-  { symbol: 'RUNEUSDT', name: 'THORChain', oiStability: 87, minLotStepUsd: 0.495, is10DollarApproved: true },
-  { symbol: 'GALAUSDT', name: 'Gala', oiStability: 84, minLotStepUsd: 0.022, is10DollarApproved: true },
-  { symbol: 'TONUSDT', name: 'Toncoin', oiStability: 94, minLotStepUsd: 0.58, is10DollarApproved: true },
-  { symbol: '1000FLOKIUSDT', name: 'Floki', oiStability: 85, minLotStepUsd: 0.155, is10DollarApproved: true },
-  { symbol: 'FILUSDT', name: 'Filecoin', oiStability: 89, minLotStepUsd: 0.375, is10DollarApproved: true },
-  { symbol: 'KASUSDT', name: 'Kaspa', oiStability: 91, minLotStepUsd: 0.138, is10DollarApproved: true },
-  { symbol: 'AAVEUSDT', name: 'Aave', oiStability: 93, minLotStepUsd: 15.42, is10DollarApproved: false }
-];
+import { TOP_30_UNIVERSE } from '../engine/fleetUniverse';
 
 const DEFAULT_GOVERNOR: ConcurrencyGovernorConfig = {
   maxActiveSlots: 3,
